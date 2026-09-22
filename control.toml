@@ -1,0 +1,75 @@
+# Perigee Control settings. Every key is optional; anything missing falls back to a built-in default.
+# The orbit viewer keeps its own settings file (see [viewer]); this file covers the boot page, the tiles,
+# the mount, the serial link and how the engine is run. Relative paths are resolved from the folder you
+# run perigee-control in (normally this one, a sibling of perigee-viewer and Perigee).
+
+[viewer]
+config = "../perigee-viewer/viewer.toml"   # the viewer's settings (look, station, regions, propagation)
+
+[data]
+# Folder holding Perigee's outputs (SORTED_SATS.json, ELSET.json, NORADs.json, SATELLITE_RANKS.json, ...).
+# "" = whatever the viewer's orbit_file points at. The engine writes into the folder it is run from, so
+# this is ../Perigee when you run `perigee` there and ../Perigee/src when the systemd timer runs it.
+dir = "../Perigee"
+
+[window]
+title  = "PERIGEE // control"
+width  = 1920
+height = 1080
+font_size = 12.0      # body text; titles are a little larger
+hdr    = true         # HDR target so the bloom below works
+bloom  = 0.25         # phosphor glow, 0 disables
+scanlines = true      # same CRT overlay as the viewer (uses the viewer's [fx] strength)
+
+[tiles]
+# One window, five tiles: 0 ORBIT VIEW (the viewer, with all its own panels and keys) on the left, and the
+# 2 x 2 command grid on the right: 1 LIVE DATA over 2 MOTOR CONTROL, 3 MOUNT over 4 SERIAL CONSOLE.
+gap = 8.0             # pixels between tiles; the divider runs down the middle of it
+globe_ratio = 0.5     # width share of ORBIT VIEW at launch (Ctrl+= / Ctrl+- resize, Ctrl+0 hides it)
+main_ratio = 0.5      # within the grid: width share of the LIVE / MOTOR column
+row_ratio  = 0.58     # height share of the top tile in each column at launch
+divider = "#9CFFB8"   # the bright line in every gap and around the page ("" = none)
+divider_width = 2.5   # pixels
+border = "#3BEB6B"    # tile frame colour ("" = the viewer's dim text colour); the focused tile uses the viewer's reticle colour
+
+[perigee]
+# The engine, run from the boot page: `perigee login` to check the Space-Track credentials, `perigee`
+# for a full run (fetch, propagate, rank), `perigee rank` to re-rank the data on disk. It runs in [data] dir.
+bin = "../Perigee/target/release/perigee"   # when this is not built, `cargo run --release` in dir is used
+dir = "../Perigee"                          # the engine's crate; its .env holds the saved SPACETRACK_USER / SPACETRACK_PASS
+
+[boot]
+enabled = true        # false: no boot page, no login, straight to the tiles
+rain = true           # falling glyphs behind the boot log
+line_seconds = 0.09   # pause between lines as the log types itself out
+decode_seconds = 0.45 # how long a new line takes to settle from noise into text
+
+[serial]
+port = "auto"         # "/dev/rfcomm0", "/dev/ttyACM0", ... or "auto" = first of /dev/rfcomm*, /dev/ttyACM*, /dev/ttyUSB*
+baud = 115200
+simulate = true       # no port (or none found): drive a built-in mount simulator that speaks the same protocol
+reconnect_seconds = 3.0
+telemetry_hz = 5.0    # asked of the firmware with "TEL <hz>" after connecting
+
+[mount]
+# Mount frame: azimuth 0..az_travel_deg on the Stingray-4, elevation el_min..el_max on the Stingray-9.
+# az_center_bearing_deg is the ONE calibration number: the true bearing the dish faces at mid travel
+# (az_travel/2). With 450 deg of travel the unreachable 270 deg gap is centred opposite this bearing.
+az_travel_deg         = 450.0
+az_center_bearing_deg = 217.5    # middle of the 120..315 DISH SECTOR; the gap sits due north
+el_min_deg            = -5.0
+el_max_deg            = 185.0    # > 90 lets the mount flip over for passes near the zenith
+az_rate_dps           = 20.0     # slew limits sent to the firmware (RATE) after connecting
+el_rate_dps           = 15.0
+park_az_deg           = 225.0    # mount-frame park pose (mid travel)
+park_el_deg           = 45.0
+home_el_deg           = 0.0      # HOME = mid azimuth travel at this elevation
+
+[tracking]
+sample_seconds   = 2.0    # spacing of the az/el samples the pass is solved on
+command_hz       = 4.0    # how often GO az el is sent while tracking
+lead_seconds     = 0.4    # aim this far ahead of real time to cover servo lag
+preposition_min  = 3.0    # minutes before AOS the dish is sent to the AOS point
+lookahead_hours  = 24.0   # how far ahead to look for the next pass of the picked satellite
+mask_deg         = 0.0    # elevation floor for AOS/LOS; 0 = the viewer's elevation_mask_deg
+park_after       = true   # send PARK when the pass ends
