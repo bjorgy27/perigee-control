@@ -94,10 +94,11 @@ impl SerialLink {
         }
     }
 
-    /// Lines received since the last call. Steps the simulator by dt seconds.
-    pub fn poll(&mut self, dt: f64) -> Vec<String> {
+    /// Lines received since the last call. Steps the simulator: its axes move by `dt * time_scale` clock
+    /// seconds (the viewer's sped-up clock moves the simulated mount faster too), telemetry on real time.
+    pub fn poll(&mut self, dt: f64, time_scale: f64) -> Vec<String> {
         let mut out = std::mem::take(&mut self.inbox);
-        if let Some(sim) = &mut self.sim { out.extend(sim.step(dt)); }
+        if let Some(sim) = &mut self.sim { out.extend(sim.step_scaled(dt * time_scale, dt)); }
         let mut closed = None;
         if let Some(w) = &self.worker {
             let rx = w.rx.lock().unwrap();
@@ -224,13 +225,16 @@ impl MountSim {
             None => vec![],
         }
     }
-    pub fn step(&mut self, dt: f64) -> Vec<String> {
-        let slew = |x: &mut f64, t: f64, rate: f64| { let d = t - *x; let m = rate * dt; *x += d.clamp(-m, m); };
+    #[cfg(test)]
+    pub fn step(&mut self, dt: f64) -> Vec<String> { self.step_scaled(dt, dt) }
+    /// Axes move for `dt_motion` seconds at their rate limits; telemetry is timed on `dt_real`
+    pub fn step_scaled(&mut self, dt_motion: f64, dt_real: f64) -> Vec<String> {
+        let slew = |x: &mut f64, t: f64, rate: f64| { let d = t - *x; let m = rate * dt_motion.max(0.0); *x += d.clamp(-m, m); };
         slew(&mut self.az, self.az_t, self.az_rate);
         slew(&mut self.el, self.el_t, self.el_rate);
         let mut out = Vec::new();
         if self.tel_hz > 0.0 {
-            self.tel_acc += dt;
+            self.tel_acc += dt_real;
             if self.tel_acc >= 1.0 / self.tel_hz { self.tel_acc = 0.0; out.push(self.telemetry()); }
         }
         out
@@ -265,5 +269,18 @@ mod tests {
         assert!(!s.moving());
         s.handle("STOP");
         assert_eq!(s.el_t, s.el);
+    }
+
+    #[test]
+    fn sim_motion_follows_the_scaled_clock() {
+        let mut s = sim();
+        s.handle("GO 225 100"); s.handle("TEL 5");
+        //One real second at 20x clock: 20 clock seconds of motion (el reaches its target), telemetry still ~5 lines
+        let lines: Vec<String> = (0..10).flat_map(|_| s.step_scaled(2.0, 0.1)).collect();
+        assert!((s.el - 100.0).abs() < 1e-9);
+        assert!(lines.len() >= 4 && lines.len() <= 6, "{}", lines.len());
+        //A paused clock: no motion at all
+        s.handle("GO 225 0"); s.step_scaled(0.0, 1.0);
+        assert!((s.el - 100.0).abs() < 1e-9);
     }
 }

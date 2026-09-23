@@ -23,7 +23,7 @@ libc = "0.2"        # termios: the serial port is opened and configured by hand,
 bevy = { version = "0.15", default-features = false, features = [
     "bevy_asset", "bevy_color", "bevy_core_pipeline", "bevy_gizmos", "bevy_pbr", "bevy_picking",
     "bevy_render", "bevy_state", "bevy_text", "bevy_ui", "bevy_ui_picking_backend", "bevy_window",
-    "bevy_winit", "multi_threaded", "tonemapping_luts", "hdr", "smaa_luts", "x11", "wayland", "png",
+    "bevy_winit", "multi_threaded", "tonemapping_luts", "hdr", "smaa_luts", "x11", "wayland", "png", "bmp",
 ] }
 
 [profile.dev.package."*"]

@@ -78,8 +78,9 @@ pub struct BootCfg {
     pub rain: bool,         // the falling glyphs behind the boot log
     pub line_seconds: f64,  // pause between lines as the log types itself out
     pub decode_seconds: f64,// how long a new line takes to resolve from noise into text
+    pub font_size: f32,     // the boot page's type (larger than the tiles: it is read from across the room)
 }
-impl Default for BootCfg { fn default() -> Self { Self { enabled: true, rain: true, line_seconds: 0.09, decode_seconds: 0.45 } } }
+impl Default for BootCfg { fn default() -> Self { Self { enabled: true, rain: true, line_seconds: 0.09, decode_seconds: 0.45, font_size: 15.0 } } }
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
@@ -104,11 +105,19 @@ impl Default for MountCfg {
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct TrackingCfg {
-    pub sample_seconds: f64, pub command_hz: f64, pub lead_seconds: f64, pub preposition_min: f64,
+    pub sample_seconds: f64, pub command_hz: f64, pub lead_seconds: f64,
     pub lookahead_hours: f64, pub mask_deg: f64, pub park_after: bool,
+    pub auto_arm: bool,         // picking a satellite starts the procedure by itself (a new pick restarts it)
+    pub step_seconds: f64,      // pause between the procedure's checks so they can be read as they fill in
+    pub on_point_deg: f64,      // the mount counts as on point when measured and commanded agree this closely
+    pub sim_clock: bool,        // with the simulator, follow the viewer's clock (HISTORY speed applies) instead of the wall clock
+    pub sim_warp: bool,         // with the simulator, jump the viewer's clock to just before AOS so the pass plays out now
+    pub warp_lead_s: f64,       // seconds before AOS the warp lands
+    pub warp_speed: f64,        // viewer speed while the warped pass runs
 }
 impl Default for TrackingCfg {
     fn default() -> Self { Self {
-        sample_seconds: 2.0, command_hz: 4.0, lead_seconds: 0.4, preposition_min: 3.0, lookahead_hours: 24.0, mask_deg: 0.0, park_after: true,
+        sample_seconds: 2.0, command_hz: 4.0, lead_seconds: 0.4, lookahead_hours: 24.0, mask_deg: 0.0, park_after: true,
+        auto_arm: true, step_seconds: 0.7, on_point_deg: 0.5, sim_clock: true, sim_warp: true, warp_lead_s: 90.0, warp_speed: 20.0,
     } }
 }

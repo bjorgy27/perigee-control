@@ -43,6 +43,7 @@ enabled = true        # false: no boot page, no login, straight to the tiles
 rain = true           # falling glyphs behind the boot log
 line_seconds = 0.09   # pause between lines as the log types itself out
 decode_seconds = 0.45 # how long a new line takes to settle from noise into text
+font_size = 15.0      # the boot page's type
 
 [serial]
 port = "auto"         # "/dev/rfcomm0", "/dev/ttyACM0", ... or "auto" = first of /dev/rfcomm*, /dev/ttyACM*, /dev/ttyUSB*
@@ -67,9 +68,22 @@ home_el_deg           = 0.0      # HOME = mid azimuth travel at this elevation
 
 [tracking]
 sample_seconds   = 2.0    # spacing of the az/el samples the pass is solved on
-command_hz       = 4.0    # how often GO az el is sent while tracking
+command_hz       = 4.0    # how often GO az el is sent while tracking (in clock seconds)
 lead_seconds     = 0.4    # aim this far ahead of real time to cover servo lag
-preposition_min  = 3.0    # minutes before AOS the dish is sent to the AOS point
 lookahead_hours  = 24.0   # how far ahead to look for the next pass of the picked satellite
 mask_deg         = 0.0    # elevation floor for AOS/LOS; 0 = the viewer's elevation_mask_deg
 park_after       = true   # send PARK when the pass ends
+# The procedure. Picking a satellite in ORBIT VIEW starts it by itself (auto_arm): TARGET, LINK, EPHEMERIS,
+# PASS, PATH checks one after another, then SLEW to the AOS point, ARMED until AOS, TRACKING, PARK. A new pick
+# restarts it for the new satellite; clearing the pick (Escape on the globe) aborts and parks.
+auto_arm         = true
+step_seconds     = 0.7    # pause between the checks so the list can be read as it fills in
+on_point_deg     = 0.5    # measured vs commanded agreement that counts as "on point"
+# Simulation. With the built-in mount simulator (no serial port) the dish follows the viewer's clock, so
+# HISTORY mode's speed and pause apply to the mount too, and the procedure warps the viewer's clock to
+# warp_lead_s before AOS at warp_speed so the pass plays out on screen right away, then returns to LIVE.
+# Neither happens on a real serial link.
+sim_clock        = true
+sim_warp         = true
+warp_lead_s      = 90.0
+warp_speed       = 20.0

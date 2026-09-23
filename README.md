@@ -2,8 +2,8 @@
 
 The ground-station control base for Perigee, in one window: a **boot page** (checks, Space-Track login,
 an engine run if you want fresh data), then the **orbit viewer** as one tile beside the four command
-tiles, laid out like Hyprland but inside the window, with bright dividers between them. Pick the
-satellite on the globe, ARM in LIVE DATA, and watch the mount take the pass.
+tiles, laid out like Hyprland but inside the window, with bright dividers between them. Pick a
+satellite on the globe and watch the mount run the procedure and take the pass.
 
 ```
 perigee-control/            this crate: `cargo run --release` from here
@@ -35,25 +35,32 @@ writes into the folder it is run from: `../Perigee` when run by hand there, `../
 systemd timer). `[perigee] bin` / `dir` say how to run the engine; `[boot] enabled = false` skips the
 boot page entirely.
 
+Debug switches in the environment: `PERIGEE_BOOT=0` skips the boot page, `PERIGEE_SCREENSHOT=<prefix>`
+saves `<prefix>-<seconds>.png` of the window every 3 s (`PERIGEE_SCREENSHOT_EVERY` changes that), `PERIGEE_BOOT_AUTO=1` takes the direct-entry path by itself (`=demo` presses Enter at the logon and data prompts instead), `PERIGEE_RECORD=<dir>` writes every frame as a bitmap at 24 frames per second until two seconds after the tiles are up, then quits (`ffmpeg -framerate 24 -start_number 1 -i <dir>/frame-%05d.bmp -c:v libx264 -pix_fmt yuv420p demo.mp4` makes the video), `PERIGEE_EXIT_AFTER=<seconds>` quits by itself, `PERIGEE_AUTOPICK=<NORAD id or rank>` picks that satellite (or the top-ranked one) two seconds after the tiles are up, so the procedure runs unattended.
+Together they let the app run unattended on a spare workspace and report what it drew.
+
 ## The boot page
 
-Glyph rain behind a log that types itself out, every line resolving from noise into text:
+Glyph rain behind a log that types itself out, every line resolving from noise into text, in the phosphor
+green of the viewer. Type size is `[boot] font_size`.
 
-1. **CHECK**: `control.toml`, the viewer settings and station, the data folder with the age of every file,
-   the engine binary (or `cargo run` as a fallback), serial ports (or the simulator), the mount frame, then
-   everything the viewer said while loading (data source, propagation, catalog, ranks, categories, the
+1. **SYSTEM CHECK**: `control.toml`, the viewer settings and station, the data store with the age of every
+   file, the engine binary (or `cargo run` as a fallback), serial ports (or the simulator), the mount frame,
+   then everything the viewer said while loading (data source, propagation, catalog, ranks, categories, the
    history and live windows: the same lines Perigee itself prints).
-2. **LOGIN**: identity and password for space-track.org, identity prefilled from the engine's `.env`; with
-   a password saved there, Enter uses it. The page runs `perigee login`, a new engine subcommand that logs
-   in and proves the session with one small query (the newest ISS element set), and streams its lines:
-   `ACCESS GRANTED` or `ACCESS DENIED`. **Tab** switches field, **F2** skips the login, **Esc** goes
-   straight to the tiles.
-3. **MENU**: **Enter** = FULL RUN (`perigee`: fetch Space-Track and SatNOGS, propagate, rank; about a
-   minute), **R** = RANK ONLY (`perigee rank`), **S** = SKIP (data on disk as it is), **L** = back to login.
-   The engine runs as a child process in `[data] dir` with the credentials in its environment; its output
-   streams onto the page; **Esc** stops it. When it finishes the viewer **reloads** the new files in place
-   (satellites respawned, propagation restarted, ranking panel rebuilt).
-4. **LOAD**: the viewer's propagation progress (`PROPAGATING n/N`), then `ENTERING CONTROL` and the tiles.
+2. **LOGON**: identification and password for space-track.org, identification prefilled from the engine's
+   `.env`; with a password on file there, Enter uses it. The page runs `perigee login`, a new engine
+   subcommand that logs in and proves the session with one small query (the newest ISS element set), and
+   streams its lines: `SESSION ESTABLISHED` or `AUTHENTICATION FAILED`. **Tab** switches field, **F2**
+   bypasses the logon, **Esc** is direct entry.
+3. **DATA**: **Enter** proceeds with the data on file; **F** = full catalog refresh (`perigee`: fetch
+   Space-Track and SatNOGS, propagate, rank; about a minute), **R** = re-rank (`perigee rank`), **L** = log
+   on again. The engine runs as a child process in `[data] dir` with the credentials in its environment; its
+   output streams onto the page; **Esc** stops it. When it finishes the viewer **reloads** the new files in
+   place (satellites respawned, propagation restarted, ranking panel rebuilt) and the page returns to DATA.
+4. **INITIALIZING SUBSYSTEMS**: five progress bars (ORBIT VIEW follows the viewer's real propagation, the
+   others are timed), `ALL SYSTEMS NOMINAL`, `ENTERING CONTROL`; the rain rushes. Then the page lifts and
+   the tiles come online one after another, ORBIT VIEW first, while the dividers draw themselves in.
 
 ## The control page
 
@@ -66,7 +73,7 @@ around the page; the focused tile has a bright frame and a bar under its title.
 | Tile | Shows | Does |
 |---|---|---|
 | **0 ORBIT VIEW** | the viewer: globe, tracks, view cone, ranking panel, info box, HUD | all the viewer's keys and mouse (drag orbits, wheel zooms, click picks, `/` searches, V regions, T types, L live/history, X explore, ...) |
-| **1 LIVE DATA** | the picked satellite: bearing / elevation / range / range rate now, Doppler on its first listed downlink, its next pass (AOS, LOS, peak) and the solved mount path, the sequence state, the dish's current sky direction; a polar sky plot of the pass with the satellite (cross), the dish (circle) and the azimuth limits (red ticks) | **ARM** (A) solve the next pass and start the sequence, **AIM** (I) point at the satellite right now by the shortest move, **ABORT** (Escape) stop everything, **PARK** |
+| **1 LIVE DATA** | the picked satellite: bearing / elevation / range / range rate on the clock the dish follows, Doppler on its first listed downlink, its next pass (AOS, LOS, peak) and the solved mount path, the dish's sky direction and pointing error, the procedure checklist; a polar sky plot of the pass with the satellite (cross), the dish (circle) and the azimuth limits (red ticks) | **ARM** (A) start the procedure by hand, **AIM** (I) point at the satellite right now by the shortest move, **WARP** (W) jump the viewer's clock to the pass (simulator), **ABORT** (Escape) stop everything, **PARK**, **AUTO** toggle the procedure-on-pick |
 | **2 MOTOR CONTROL** | link status, firmware id, commanded and measured axes in mount degrees and as sky bearing / elevation, encoder, limits, step size | **AZ- AZ+ EL- EL+** jog by the step (arrow keys when focused), **STEP** cycles 0.5 / 1 / 5 / 10 (`[` `]`), **STOP** (S), **PARK** (P), **HOME** (H, mid travel), **CONNECT** / **CLOSE** the serial port, **SIM** switch to the simulator |
 | **3 MOUNT** | wireframe of the Perigee gimbal (pedestal, housing, columns, drums, hub, boom, 1 m dish, counterweight) following the telemetry; rays: bright = measured boresight, blue = commanded, green = satellite; compass ticks, azimuth limit radials, the unreachable gap if any | drag to orbit, wheel to zoom |
 | **4 SERIAL CONSOLE** | every line to (`>`) and from (`<`) the Arduino, local notes (`#`) | type a command and Enter to send it straight to the mount; Up / Down history; PageUp / PageDown or wheel to scroll; `/help` `/ports` `/open PORT [BAUD]` `/close` `/sim` `/clear` |
@@ -86,18 +93,39 @@ Keys: Bevy's `ButtonInput` is global, so `input.rs` erases every key from it unl
 focus (page keys always), and tells the viewer through `ViewerFocus` to ignore typed text; mouse presses
 outside the globe are erased the same way.
 
-## The tracking sequence
+## The procedure
 
-1. Pick a satellite in the viewer. LIVE DATA immediately shows where it is and finds its **next pass**
-   from the viewer's own propagated track (`tracking::find_next_pass`: coarse scan one step at a time,
-   crossings refined by bisection; the elevation floor is `[tracking] mask_deg`, or the viewer's mask).
-2. The pass is sampled every `sample_seconds` into (time, bearing, elevation) and handed to the
-   **path solver** (`mount::MountGeom::solve_path`), which turns it into axis commands, see below.
-3. **ARM**: `preposition_min` minutes before AOS the dish is sent to the AOS point (`GO az el`).
-4. At AOS the tracker sends `GO az el` at `command_hz`, aiming `lead_seconds` ahead of real time
-   (servo lag). The dish follows the real clock even if the viewer is in History mode.
-5. At LOS: `PARK` (if `park_after`), then back to idle. Changing the pick while armed does not retarget
-   the dish; ABORT then ARM the new one. Losing the link aborts.
+Picking a satellite in ORBIT VIEW starts it (`[tracking] auto_arm`; AUTO in LIVE DATA or `/auto` in the
+console toggles that, ARM starts it by hand). Every step is ticked off in LIVE DATA and noted in the
+console as it happens:
+
+1. **TARGET** the pick. **LINK** the serial port or simulator, telemetry alive. **EPHEMERIS** the viewer's
+   propagated track covers the clock. **PASS** the **next pass** from that track (`tracking::find_next_pass`:
+   coarse scan one step at a time, crossings refined by bisection; floor `[tracking] mask_deg` or the
+   viewer's mask); a pass already in progress counts. **PATH** the pass sampled every `sample_seconds`
+   into (time, bearing, elevation) and solved by `mount::MountGeom::solve_path` into axis commands (see
+   below), flagged when it is clipped or faster than the slew limits. The checks come one per
+   `step_seconds` so the list can be read; a failed check ends the procedure with the reason.
+2. **SLEW**: `GO az el` to the AOS point, then wait until the mount reports it is there (measured within
+   `on_point_deg` of commanded and not moving).
+3. **ARMED**: countdown to AOS.
+4. **TRACKING**: `GO az el` at `command_hz`, aiming `lead_seconds` ahead (servo lag). LIVE DATA and the
+   MOUNT title show the pointing error between the measured boresight and the satellite: **LOCKED** under
+   one degree.
+5. **PARK** at LOS (if `park_after`), then DONE once the mount stops. A new pick restarts the procedure for
+   the new satellite; clearing the pick (Escape on the globe) aborts and parks; ABORT (Escape in any
+   command tile) stops the mount. Losing the link aborts.
+
+### Simulating it
+
+With the built-in mount simulator (no serial port) the dish follows the **viewer's clock** rather than the
+wall clock (`sim_clock`): HISTORY mode's speed and pause move the simulated mount too, and its axes slew
+at their real rate limits in clock seconds. When the procedure is armed for a pass that is still far off
+it **warps** the viewer to `warp_lead_s` before AOS at `warp_speed` (`sim_warp`; WARP / W does it by
+hand): the globe jumps to the pass, the wireframe slews to the AOS point, locks on as the satellite
+rises, tracks it across the sky, parks at LOS, and the viewer returns to LIVE. Everything the real mount
+would be sent goes through the same link and console. A real serial link never warps and always follows
+real time.
 
 ### Mount frame and the path solver
 

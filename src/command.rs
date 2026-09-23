@@ -14,9 +14,14 @@
 ///   Ctrl+0..4                    show / hide a tile                     click   focus
 /// Tile keys: ORBIT VIEW  all the viewer's keys and mouse   MOTOR  arrows jog, [ ] step, S stop, P park,
 ///   H home   CONSOLE  type, Enter, Up/Down history, PageUp/PageDown scroll   MOUNT  drag to orbit,
-///   wheel to zoom   LIVE  A arm, I aim, Escape abort
+///   wheel to zoom   LIVE  A arm, I aim, W warp, Escape abort
+///
+/// The procedure: picking a satellite starts it (auto_arm): TARGET, LINK, EPHEMERIS, PASS and PATH checks,
+/// SLEW to the AOS point, ARMED until AOS, TRACKING, PARK, each step ticked off in LIVE DATA and noted in
+/// the console. On the simulator the dish follows the viewer's clock and the clock is warped to just
+/// before AOS, so the whole pass plays out on screen (the wireframe slews, locks on, tracks, parks).
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
-use crate::boot::Booting;
+use crate::boot::{Booting, Reveal};
 use crate::config::ControlConfig;
 use crate::console::Console;
 use crate::input::{CmdInput, CmdWindow};
@@ -24,7 +29,7 @@ use crate::mount::{draw_mount, MountColors, MountGeom, MountState, MountView};
 use crate::serial::SerialLink;
 use crate::tiles::{Dir, Layout, Rect, Tile, ALL};
 
-use crate::tracking::{find_next_pass, sample_pass, Phase, Plan, Station, Step, Track, Tracker};
+use crate::tracking::{find_next_pass, sample_pass, Inputs, Phase, Plan, Station, Step, Track, Tracker};
 use bevy::core_pipeline::bloom::Bloom;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
@@ -36,9 +41,14 @@ use bevy::ui::widget::NodeImageMode;
 use bevy::ui::IsDefaultUiCamera;
 use bevy::window::PrimaryWindow;
 use perigee_viewer::config::{hex, Config as ViewerCfg};
-use perigee_viewer::{now_jd, Catalog, Orbits, Ranks, Selected, Sim, UiFont, NOT_YET_JD};
+use perigee_viewer::{now_jd, Catalog, Mode, Orbits, Ranks, Selected, Sim, UiFont, NOT_YET_JD};
 
-pub const LAYER: usize = 1;   // render layer of the command window: keeps the globe out and our lines in
+/// Render layers. Interface nodes are always on layer 0 and are only marked visible by a camera that has
+/// layer 0, so both cameras carry it. This page's lines live on LAYER, which only the control camera has;
+/// the viewer's gizmo lines are moved to VIEWER_LINES, which only the globe camera has. Without that split
+/// each camera would draw the other's lines through its own projection.
+pub const LAYER: usize = 1;
+pub const VIEWER_LINES: usize = 2;
 
 #[derive(Default, GizmoConfigGroup, Reflect)]
 pub struct CmdLines;
@@ -89,11 +99,11 @@ impl Palette {
 #[derive(Component)] pub struct CmdUi;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { Arm, Aim, Abort, Park, Stop, Home, JogAzNeg, JogAzPos, JogElNeg, JogElPos, StepCycle, Connect, Disconnect, Sim, ClearConsole }
+pub enum Action { Arm, Aim, Warp, Auto, Abort, Park, Stop, Home, JogAzNeg, JogAzPos, JogElNeg, JogElPos, StepCycle, Connect, Disconnect, Sim, ClearConsole }
 impl Action {
     fn label(self) -> &'static str {
         match self {
-            Action::Arm => "ARM", Action::Aim => "AIM", Action::Abort => "ABORT", Action::Park => "PARK", Action::Stop => "STOP", Action::Home => "HOME",
+            Action::Arm => "ARM", Action::Aim => "AIM", Action::Warp => "WARP", Action::Auto => "AUTO", Action::Abort => "ABORT", Action::Park => "PARK", Action::Stop => "STOP", Action::Home => "HOME",
             Action::JogAzNeg => "AZ -", Action::JogAzPos => "AZ +", Action::JogElNeg => "EL -", Action::JogElPos => "EL +", Action::StepCycle => "STEP",
             Action::Connect => "CONNECT", Action::Disconnect => "CLOSE", Action::Sim => "SIM", Action::ClearConsole => "CLEAR",
         }
@@ -111,7 +121,20 @@ pub struct TargetInfo {
     pub downlink_hz: Option<f64>, pub tx_desc: String, pub tx_mode: String,
     pub rank: Option<(usize, f64)>,
     pub preview: Option<Plan>, pub preview_for: Option<usize>, pub preview_at: f64, pub preview_note: String,
+    pub preview_at_jd: f64,             // clock time the preview was computed at
+    pub clock_jd: f64,                  // the clock the dish follows: real time, or the viewer's when simulating
+    pub time_scale: f64,                // clock seconds per real second
+    pub clock_label: &'static str,
+    pub point_err_deg: Option<f64>,     // angle between the measured boresight and the satellite
 }
+
+/// auto_arm at run time (AUTO button / "/auto" toggles it; control.toml sets the start value)
+#[derive(Resource)]
+pub struct AutoArm(pub bool);
+
+/// The viewer's clock has been moved to a pass by the procedure (simulator only); restored at the end
+#[derive(Resource, Default)]
+pub struct Warp { pub active: bool, pub prev_speed: f64, pub prev_mode_live: bool }
 
 #[derive(Resource, Default)]
 pub struct DragState { pub tile: Option<Tile> }
@@ -133,14 +156,15 @@ impl Plugin for ControlPlugin {
             .init_resource::<Actions>()
             .init_resource::<TargetInfo>()
             .init_resource::<DragState>()
+            .init_resource::<Warp>()
             .init_gizmo_group::<CmdLines>()
             .init_gizmo_group::<CmdDividers>()
             .add_systems(Startup, (setup_palette, setup_camera, setup_gizmos).chain())
             .add_systems(PostStartup, (build_ui, adopt_globe_camera).chain())
             .add_systems(PreUpdate, crate::input::route_input.after(bevy::input::InputSystem).before(bevy::ui::UiSystem::Focus))
             .add_systems(Update, (
-                layout_tiles, page_keys, console_keys, motor_keys, live_keys, buttons,
-                link_tick, target_tick, apply_actions, tracker_tick, refresh_text, draw_overlays,
+                (layout_tiles, page_keys, console_keys, motor_keys, live_keys, buttons).chain(),
+                (clock_tick, link_tick, target_tick, apply_actions, tracker_tick, warp_tick, refresh_text, draw_overlays).chain(),
             ).chain());
     }
 }
@@ -148,6 +172,7 @@ impl Plugin for ControlPlugin {
 fn setup_palette(mut commands: Commands, vcfg: Res<ViewerCfg>, ccfg: Res<ControlConfig>) {
     commands.insert_resource(Palette::from_viewer(&vcfg, &ccfg.tiles));
     commands.insert_resource(Geom(MountGeom::from_cfg(&ccfg.mount)));
+    commands.insert_resource(AutoArm(ccfg.tracking.auto_arm));
     commands.insert_resource(Layout::new(ccfg.tiles.main_ratio, ccfg.tiles.row_ratio, ccfg.tiles.gap, ccfg.tiles.globe_ratio, ccfg.window.font_size + 8.0));
 }
 
@@ -164,9 +189,10 @@ fn setup_gizmos(mut store: ResMut<GizmoConfigStore>, ccfg: Res<ControlConfig>) {
 /// (order -1) and clearing the whole window, so the viewer paints its tile on top afterwards.
 fn setup_camera(mut commands: Commands, cfg: Res<ControlConfig>, vcfg: Res<ViewerCfg>, mut primary: Query<(Entity, &mut Window), With<PrimaryWindow>>, mut cw: ResMut<CmdWindow>, mut cc: ResMut<CmdCamera>) {
     let w = &cfg.window;
+    //Only the title: asking for a size here races the compositor's own resize (Hyprland tiles the window)
+    //and for one frame the viewport below would exceed the surface, which wgpu treats as fatal.
     if let Ok((e, mut win)) = primary.get_single_mut() {
         win.title = w.title.clone();
-        win.resolution.set(w.width, w.height);
         cw.0 = Some(e);
     }
     let tonemap = match vcfg.perf.tonemapping.to_lowercase().as_str() { "none" => Tonemapping::None, "reinhard" => Tonemapping::Reinhard, "aces" => Tonemapping::AcesFitted, _ => Tonemapping::TonyMcMapface };
@@ -174,7 +200,7 @@ fn setup_camera(mut commands: Commands, cfg: Res<ControlConfig>, vcfg: Res<Viewe
         Camera2d,
         Camera { hdr: w.hdr, order: -1, clear_color: ClearColorConfig::Custom(hex(&vcfg.colors.space)), ..default() },
         tonemap,
-        RenderLayers::layer(LAYER),
+        RenderLayers::from_layers(&[0, LAYER]),
         Name::new("control camera"),
     ));
     if w.hdr && w.bloom > 0.0 { cam.insert(Bloom { intensity: w.bloom, ..Bloom::NATURAL }); }
@@ -185,11 +211,16 @@ fn setup_camera(mut commands: Commands, cfg: Res<ControlConfig>, vcfg: Res<Viewe
 /// The viewer's 3D camera becomes the ORBIT VIEW tile: it is the default UI camera (the viewer's panels
 /// and buttons target it, so they lay out inside the tile) and its viewport follows the tile from now on.
 /// It stays off while the boot page is up.
-fn adopt_globe_camera(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<Camera3d>>, mut globe: ResMut<GlobeCamera>, booting: Res<Booting>) {
+fn adopt_globe_camera(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<Camera3d>>, mut globe: ResMut<GlobeCamera>, booting: Res<Booting>, mut store: ResMut<GizmoConfigStore>) {
     if let Some((e, mut cam)) = cams.iter_mut().next() {
         cam.is_active = !booting.0;
-        commands.entity(e).insert(IsDefaultUiCamera);
+        commands.entity(e).insert((IsDefaultUiCamera, RenderLayers::from_layers(&[0, VIEWER_LINES])));
         globe.0 = Some(e);
+    }
+    //Every gizmo group that is not ours belongs to the viewer: only the globe camera draws it
+    let ours = [std::any::TypeId::of::<CmdLines>(), std::any::TypeId::of::<CmdDividers>()];
+    for (id, config, _) in store.iter_mut() {
+        if !ours.contains(id) { config.render_layers = RenderLayers::layer(VIEWER_LINES); }
     }
 }
 
@@ -216,7 +247,7 @@ fn spawn_ui(commands: &mut Commands, cam: Entity, font: &Handle<Font>, pal: &Pal
                         b.spawn((Text::new("> "), tf(fs), TextColor(pal.bright), TextLayout::new_with_no_wrap(), ConsoleInputText, Node { flex_shrink: 0.0, ..default() }));
                     }
                     let actions: &[Action] = match t {
-                        Tile::Live => &[Action::Arm, Action::Aim, Action::Abort, Action::Park],
+                        Tile::Live => &[Action::Arm, Action::Aim, Action::Warp, Action::Abort, Action::Park, Action::Auto],
                         Tile::Motor => &[Action::JogAzNeg, Action::JogAzPos, Action::JogElNeg, Action::JogElPos, Action::StepCycle, Action::Stop, Action::Park, Action::Home, Action::Connect, Action::Sim, Action::Disconnect],
                         Tile::Console => &[Action::ClearConsole],
                         Tile::Mount | Tile::Globe => &[],
@@ -254,28 +285,37 @@ fn spawn_ui(commands: &mut Commands, cam: Entity, font: &Handle<Font>, pal: &Pal
 fn layout_tiles(
     cw: Res<CmdWindow>, windows: Query<&Window>, mut layout: ResMut<Layout>, pal: Res<Palette>, booting: Res<Booting>,
     mut roots: Query<(&TileRoot, &mut Node, &mut Visibility, &mut BorderColor)>,
-    globe: Res<GlobeCamera>, mut cams: Query<&mut Camera>,
+    globe: Res<GlobeCamera>, mut cams: Query<&mut Camera>, mut last_size: Local<Option<UVec2>>,
+    reveal: Option<Res<Reveal>>, time: Res<Time>, mut commands: Commands,
 ) {
     let Some(w) = cw.0.and_then(|e| windows.get(e).ok()) else { return };
     let g = layout.gap;
     layout.compute(Rect { x: g, y: g, w: (w.width() - 2.0 * g).max(50.0), h: (w.height() - 2.0 * g).max(50.0) });
+    //Coming out of the boot page the tiles come online one after another (ORBIT VIEW first)
+    let now = time.elapsed_secs_f64();
+    let on = |t: Tile| reveal.as_ref().map_or(true, |r| r.tile(now, ALL.iter().position(|x| *x == t).unwrap_or(0)) >= 1.0);
+    if reveal.as_ref().map_or(false, |r| r.done(now)) { commands.remove_resource::<Reveal>(); }
     for (root, mut node, mut vis, mut border) in &mut roots {
         match layout.rects[root.0.idx()] {
-            Some(r) => {
+            Some(r) if on(root.0) => {
                 node.left = Val::Px(r.x); node.top = Val::Px(r.y); node.width = Val::Px(r.w); node.height = Val::Px(r.h);
                 *vis = Visibility::Inherited;
                 border.0 = if layout.focus == root.0 { pal.border_focus } else { pal.border };
             }
-            None => *vis = Visibility::Hidden,
+            _ => *vis = Visibility::Hidden,
         }
     }
     //The viewer's camera draws inside the ORBIT VIEW tile: its viewport is that rectangle in physical
     //pixels, clamped to the window. No tile (hidden, or the boot page): the camera is switched off.
     let Some(mut cam) = globe.0.and_then(|e| cams.get_mut(e).ok()) else { return };
     match layout.globe_view() {
-        Some(r) if !booting.0 => {
+        Some(r) if !booting.0 && on(Tile::Globe) => {
             let sf = w.scale_factor();
-            let (pw, ph) = (w.physical_width().max(1), w.physical_height().max(1));
+            //The surface can lag the window by a frame while it is being resized: stay inside both sizes
+            let now = UVec2::new(w.physical_width().max(1), w.physical_height().max(1));
+            let bound = last_size.map_or(now, |p| p.min(now));
+            *last_size = Some(now);
+            let (pw, ph) = (bound.x, bound.y);
             let x = ((r.x * sf).round() as u32).min(pw - 1);
             let y = ((r.y * sf).round() as u32).min(ph - 1);
             let wv = ((r.w * sf).round() as u32).clamp(1, pw - x);
@@ -336,7 +376,7 @@ fn page_keys(input: Res<CmdInput>, mut layout: ResMut<Layout>, mut drag: ResMut<
     }
 }
 
-fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<Console>, mut link: ResMut<SerialLink>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut tracker: ResMut<Tracker>) {
+fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<Console>, mut link: ResMut<SerialLink>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut tracker: ResMut<Tracker>, mut auto: ResMut<AutoArm>) {
     if !input.focused || layout.focus != Tile::Console || input.ctrl { return; }
     let typed = input.typed();
     if !typed.is_empty() { console.input.push_str(&typed); }
@@ -350,7 +390,7 @@ fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<C
             KeyCode::Enter | KeyCode::NumpadEnter => {
                 if let Some(line) = console.submit() {
                     if let Some(cmd) = line.strip_prefix('/') {
-                        local_command(cmd, &mut console, &mut link, &cfg, &geom.0, &mut tracker);
+                        local_command(cmd, &mut console, &mut link, &cfg, &geom.0, &mut tracker, &mut auto);
                     } else if link.is_open() {
                         link.send(&line);
                     } else {
@@ -363,7 +403,7 @@ fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<C
     }
 }
 
-fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &ControlConfig, geom: &MountGeom, tracker: &mut Tracker) {
+fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &ControlConfig, geom: &MountGeom, tracker: &mut Tracker, auto: &mut AutoArm) {
     let mut it = cmd.split_whitespace();
     match it.next().unwrap_or("") {
         "help" => console.help(),
@@ -379,6 +419,7 @@ fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &
         "close" => { if tracker.active() { if let Step::Send(s) = tracker.abort("link closed") { link.send(&s); } } link.close(); link.next_reconnect = f64::MAX; console.note("link closed (auto-reconnect off until /open or CONNECT)"); }
         "sim" => { link.open_sim(geom, cfg.mount.az_rate_dps, cfg.mount.el_rate_dps); console.note("simulator on"); }
         "clear" => console.lines.clear(),
+        "auto" => { auto.0 = match it.next() { Some("on") => true, Some("off") => false, _ => !auto.0 }; console.note(&format!("auto procedure on pick: {}", if auto.0 { "ON" } else { "OFF" })); }
         other => console.note(&format!("unknown local command /{other}; /help")),
     }
 }
@@ -403,6 +444,7 @@ fn live_keys(input: Res<CmdInput>, layout: Res<Layout>, mut actions: ResMut<Acti
         if p.code == KeyCode::Escape && layout.focus != Tile::Globe { actions.0.push(Action::Abort); }
         if layout.focus == Tile::Live && p.code == KeyCode::KeyA { actions.0.push(Action::Arm); }
         if layout.focus == Tile::Live && p.code == KeyCode::KeyI { actions.0.push(Action::Aim); }
+        if layout.focus == Tile::Live && p.code == KeyCode::KeyW { actions.0.push(Action::Warp); }
     }
 }
 
@@ -416,8 +458,22 @@ fn buttons(mut q: Query<(&Interaction, &CmdButton, &mut BackgroundColor), (Chang
     }
 }
 
+//------------------------------------------------------------------------------------------ clock
+/// The clock the dish follows. A real mount always follows real time. The simulator follows the viewer's
+/// clock (sim_clock), so HISTORY mode's speed and pause move the simulated mount too, and a warp lands
+/// the whole pass on screen.
+fn clock_tick(cfg: Res<ControlConfig>, link: Res<SerialLink>, sim: Res<Sim>, mode: Res<Mode>, mut info: ResMut<TargetInfo>) {
+    if link.sim.is_some() && cfg.tracking.sim_clock {
+        info.clock_jd = sim.jd();
+        info.time_scale = match *mode { Mode::History => if sim.paused { 0.0 } else { sim.speed }, Mode::Live => 1.0 };
+        info.clock_label = "SIM CLOCK (the viewer's time)";
+    } else {
+        info.clock_jd = now_jd(); info.time_scale = 1.0; info.clock_label = "REAL CLOCK";
+    }
+}
+
 //------------------------------------------------------------------------------------------ link
-fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link: ResMut<SerialLink>, mut console: ResMut<Console>, mut mount: ResMut<MountState>, mut tracker: ResMut<Tracker>) {
+fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link: ResMut<SerialLink>, mut console: ResMut<Console>, mut mount: ResMut<MountState>, mut tracker: ResMut<Tracker>, info: Res<TargetInfo>) {
     let now = time.elapsed_secs_f64();
     //Open something: the configured port when it exists, else the simulator when allowed
     if !link.is_open() && now >= link.next_reconnect {
@@ -434,7 +490,7 @@ fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link
         }
     }
     let was_open = link.is_open();
-    for line in link.poll(time.delta_secs_f64()) {
+    for line in link.poll(time.delta_secs_f64(), info.time_scale) {
         let telemetry = mount.ingest(&line);
         if !telemetry { console.rx(&line); }
         if line.starts_with("READY") { hello(&mut link, &cfg); }
@@ -443,6 +499,7 @@ fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link
     if was_open && !link.is_open() {
         console.note(&format!("link lost: {}", link.last_error));
         if tracker.active() { tracker.abort("link lost"); }
+        for e in std::mem::take(&mut tracker.events) { console.note(&e); }
     }
 }
 
@@ -456,20 +513,35 @@ fn hello(link: &mut SerialLink, cfg: &ControlConfig) {
 //------------------------------------------------------------------------------------------ target
 fn target_tick(
     time: Res<Time>, cfg: Res<ControlConfig>, vcfg: Res<ViewerCfg>, geom: Res<Geom>,
-    sel: Res<Selected>, cat: Res<Catalog>, orbits: Res<Orbits>, sim: Res<Sim>, mode: Res<perigee_viewer::Mode>, ranks: Res<Ranks>,
+    sel: Res<Selected>, cat: Res<Catalog>, orbits: Res<Orbits>, sim: Res<Sim>, mode: Res<Mode>, ranks: Res<Ranks>,
     mut info: ResMut<TargetInfo>, mut tracker: ResMut<Tracker>,
+    (mount, auto, mut link, mut console): (Res<MountState>, Res<AutoArm>, ResMut<SerialLink>, ResMut<Console>),   // one param: Bevy allows 16
+    mut last_pick: Local<Option<Option<usize>>>,
 ) {
-    //A different pick while a sequence runs does not retarget the dish: say so, keep tracking the armed one
-    if let (Some(plan), Some(col)) = (&tracker.plan, sel.0) {
-        if tracker.active() && plan.column != col && !tracker.message.starts_with("pick changed") {
-            tracker.message = format!("pick changed; still {} {}. ABORT then ARM to switch", if tracker.phase == Phase::Armed { "armed for" } else { "tracking" }, plan.name);
-        }
-    }
     let app_s = time.elapsed_secs_f64();
     info.sim_jd = sim.jd(); info.real_jd = now_jd();
-    info.history_mode = *mode == perigee_viewer::Mode::History;
+    info.history_mode = *mode == Mode::History;
     info.column = sel.0;
-    let Some(col) = sel.0 else { info.norad = None; info.name.clear(); info.have_data = false; info.preview = None; info.preview_for = None; return };
+    //The pick changed. With AUTO on, the procedure starts for the new satellite (restarting whatever ran);
+    //clearing the pick aborts and parks. With AUTO off a running sequence keeps its satellite: ABORT, then ARM.
+    let changed = *last_pick != Some(sel.0);
+    *last_pick = Some(sel.0);
+    if changed {
+        match sel.0 {
+            Some(col) if auto.0 => {
+                if tracker.active() { if let Step::Send(c) = tracker.abort("new pick") { link.send(&c); } }
+                let name = cat.ids.get(col).copied().flatten().and_then(|id| cat.names.get(&id).cloned()).unwrap_or_else(|| format!("track #{col}"));
+                tracker.start(col, &name, app_s);
+            }
+            None if tracker.active() => { if let Step::Send(c) = tracker.abort("pick cleared") { link.send(&c); } link.send("PARK"); console.note("no target: parking"); }
+            _ => {}
+        }
+    } else if let (Some(plan), Some(col)) = (&tracker.plan, sel.0) {
+        if tracker.active() && plan.column != col && !tracker.message.starts_with("pick changed") {
+            tracker.message = format!("pick changed; still {} {}. ABORT then ARM to switch", if tracker.phase == Phase::Tracking { "tracking" } else { "armed for" }, plan.name);
+        }
+    }
+    let Some(col) = sel.0 else { info.norad = None; info.name.clear(); info.have_data = false; info.preview = None; info.preview_for = None; info.point_err_deg = None; return };
     if col >= orbits.0.len() { return; }
     info.norad = cat.ids.get(col).copied().flatten();
     info.name = info.norad.and_then(|id| cat.names.get(&id).cloned()).unwrap_or_else(|| format!("track #{col}"));
@@ -477,13 +549,18 @@ fn target_tick(
     let epoch = cat.epochs.get(col).copied().flatten().unwrap_or(NOT_YET_JD);
     let track = Track { m: &orbits.0[col], epoch_jd: epoch, cfg: &vcfg };
     let sta = Station::from_cfg(&vcfg);
-    //Where it is now (real clock: this is what the dish must follow)
-    let jd = info.real_jd;
+    //Where it is on the clock the dish follows (real time with a real mount, the viewer's time on the simulator)
+    let jd = info.clock_jd;
     info.have_data = epoch < NOT_YET_JD / 2.0 && track.covers(jd);
+    info.point_err_deg = None;
     if info.have_data {
         let r = track.r(jd); let v = track.v(jd);
         let (b, e, rng) = sta.look(r, jd);
         info.bearing = b; info.el = e; info.range = rng; info.range_rate = sta.range_rate(r, v, jd);
+        if let Some((a, m)) = mount.fb {
+            let (db, de) = geom.0.sky_of(a, m);
+            info.point_err_deg = Some(angle_between(db, de, b, e));
+        }
     }
     //Transmitter: first SatNOGS record with a downlink
     info.downlink_hz = None; info.tx_desc.clear(); info.tx_mode.clear();
@@ -494,10 +571,12 @@ fn target_tick(
             info.tx_mode = tx["mode"].as_str().unwrap_or("").to_string();
         }
     }
-    //Next pass + mount path: on a new pick, then every 20 s (the pass may end, the track may extend)
-    let stale = info.preview_for != Some(col) || app_s - info.preview_at > 20.0;
+    //Next pass + mount path: on a new pick, then every 20 s (the pass may end, the track may extend), and
+    //at once after a clock jump (warp, mode change) of more than a minute
+    let jumped = (info.preview_at_jd - jd).abs() * 86400.0 > 60.0 + 20.0 * info.time_scale.max(1.0);
+    let stale = info.preview_for != Some(col) || app_s - info.preview_at > 20.0 || jumped;
     if stale && info.have_data {
-        info.preview_at = app_s; info.preview_for = Some(col);
+        info.preview_at = app_s; info.preview_at_jd = jd; info.preview_for = Some(col);
         let mask = if cfg.tracking.mask_deg > 0.0 { cfg.tracking.mask_deg } else { vcfg.station.elevation_mask_deg };
         match find_next_pass(&track, &sta, jd, jd + cfg.tracking.lookahead_hours / 24.0, mask) {
             Some(pass) => {
@@ -519,12 +598,15 @@ fn target_tick(
 fn apply_actions(
     mut actions: ResMut<Actions>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut motor: ResMut<Motor>,
     mut link: ResMut<SerialLink>, mut console: ResMut<Console>, mut tracker: ResMut<Tracker>, mount: Res<MountState>, info: Res<TargetInfo>,
+    time: Res<Time>, mut auto: ResMut<AutoArm>, mut warp: ResMut<Warp>, mut sim: ResMut<Sim>, mut mode: ResMut<Mode>,
 ) {
+    let app_s = time.elapsed_secs_f64();
     let base = mount.cmd.or(mount.fb).unwrap_or((cfg.mount.park_az_deg, cfg.mount.park_el_deg));
     let steps = [0.5, 1.0, 5.0, 10.0];
+    let _ = &warp;
     for a in std::mem::take(&mut actions.0) {
         let manual = matches!(a, Action::JogAzNeg | Action::JogAzPos | Action::JogElNeg | Action::JogElPos | Action::Park | Action::Home | Action::Aim);
-        if manual && tracker.active() { console.note("tracking is active: ABORT (Escape) before moving the mount by hand"); continue; }
+        if manual && tracker.active() { console.note("the procedure is running: ABORT (Escape) before moving the mount by hand"); continue; }
         if manual && !link.is_open() { console.note("link closed: CONNECT or SIM first"); continue; }
         match a {
             Action::JogAzNeg => { let (az, el) = geom.0.clamp(base.0 - motor.step, base.1); link.send(&format!("GO {az:.2} {el:.2}")); }
@@ -541,7 +623,7 @@ fn apply_actions(
             Action::ClearConsole => console.lines.clear(),
             Action::Aim => {
                 //Point at the satellite where it is right now, by the shortest move from the current pose
-                if !info.have_data { console.note(&format!("nothing to aim at: {}", if info.column.is_none() { "pick a satellite in the viewer" } else { info.preview_note.as_str() })); continue; }
+                if !info.have_data { console.note(&format!("nothing to aim at: {}", if info.column.is_none() { "pick a satellite in ORBIT VIEW" } else { info.preview_note.as_str() })); continue; }
                 if info.el < geom.0.el_min { console.note(&format!("{} is below the horizon (el {:.1})", info.name, info.el)); continue; }
                 match geom.0.nearest_pose(info.bearing, info.el, base) {
                     Some((az, el, flip)) => { console.note(&format!("AIM {}: bearing {:.1} el {:.1} -> mount {:.2} {:.2} ({})", info.name, info.bearing, info.el, az, el, flip.name())); link.send(&format!("GO {az:.2} {el:.2}")); }
@@ -549,29 +631,91 @@ fn apply_actions(
                 }
             }
             Action::Abort => { if let Step::Send(s) = tracker.abort("by hand") { link.send(&s); } }
+            Action::Auto => { auto.0 = !auto.0; console.note(&format!("auto procedure on pick: {}", if auto.0 { "ON" } else { "OFF" })); }
             Action::Arm => {
-                if tracker.active() { console.note("already armed; ABORT first"); continue; }
+                if tracker.active() { console.note("procedure already running; ABORT first"); continue; }
                 if !link.is_open() { console.note("link closed: CONNECT or SIM before arming"); continue; }
-                match &info.preview {
-                    Some(plan) => {
-                        let p = plan.clone();
-                        console.note(&format!("ARMED {} : AOS {} LOS {} max el {:.0}, mount path {}{}{}", p.name, jd_local(p.pass.aos_jd), jd_local(p.pass.los_jd), p.pass.max_el,
-                            p.path.flip.name(), if p.path.flips_mid > 0 { " (flips mid-pass)" } else { "" }, if p.path.clipped { " CLIPPED at the travel limit" } else { "" }));
-                        tracker.arm(p);
-                    }
-                    None => console.note(&format!("nothing to arm: {}", if info.column.is_none() { "pick a satellite in the viewer" } else { info.preview_note.as_str() })),
+                match info.column {
+                    Some(col) => tracker.start(col, &info.name, app_s),
+                    None => console.note("nothing to arm: pick a satellite in ORBIT VIEW"),
                 }
+            }
+            Action::Warp => {
+                if link.sim.is_none() { console.note("WARP is for the simulator only: a real mount follows real time"); continue; }
+                let Some(p) = tracker.plan.as_ref().or(info.preview.as_ref()) else { console.note(&format!("nothing to warp to: {}", if info.column.is_none() { "pick a satellite" } else { info.preview_note.as_str() })); continue };
+                let target = p.pass.aos_jd - cfg.tracking.warp_lead_s / 86400.0;
+                warp_to(&mut warp, &mut sim, &mut mode, target, cfg.tracking.warp_speed);
+                console.note(&format!("WARP: viewer clock -> {} ({:.0} s before AOS of {}) at x{:.0}", jd_utc_full(target), cfg.tracking.warp_lead_s, p.name, cfg.tracking.warp_speed));
             }
         }
     }
 }
 
-fn tracker_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut tracker: ResMut<Tracker>, mut link: ResMut<SerialLink>, mut console: ResMut<Console>) {
-    if !tracker.active() && tracker.phase != Phase::Done { return; }
-    if tracker.active() && !link.is_open() { tracker.abort("link closed"); return; }
-    let before = tracker.phase.clone();
-    for cmd in tracker.tick(now_jd(), time.elapsed_secs_f64(), &geom.0, &cfg.tracking) { link.send(&cmd); }
-    if before != tracker.phase { console.note(&format!("sequence: {:?} -> {:?}", before, tracker.phase)); }
+fn tracker_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut tracker: ResMut<Tracker>, mut link: ResMut<SerialLink>, mut console: ResMut<Console>, mount: Res<MountState>, info: Res<TargetInfo>) {
+    if tracker.active() || tracker.phase == Phase::Done {
+        if tracker.active() && !link.is_open() { tracker.abort("link closed"); }
+        else {
+            let inp = Inputs {
+                now_jd: info.clock_jd, app_s: time.elapsed_secs_f64(), time_scale: info.time_scale,
+                link_open: link.is_open(), link_name: link.port_name(), firmware_alive: mount.alive(),
+                have_data: info.have_data, data_note: info.preview_note.clone(),
+                preview: info.preview.as_ref(), preview_note: info.preview_note.clone(),
+                fb: mount.fb, moving: mount.moving,
+                az_rate_limit: cfg.mount.az_rate_dps, el_rate_limit: cfg.mount.el_rate_dps,
+            };
+            for cmd in tracker.tick(&inp, &geom.0, &cfg.tracking) { link.send(&cmd); }
+        }
+    }
+    for e in std::mem::take(&mut tracker.events) { console.note(&e); }
+}
+
+/// Simulator only: once the procedure is armed for a pass that is still far off, move the viewer's clock
+/// to warp_lead_s before AOS at warp_speed so the pass plays out now; when the sequence ends (or is
+/// aborted) put the viewer back on LIVE time.
+fn warp_tick(cfg: Res<ControlConfig>, link: Res<SerialLink>, tracker: Res<Tracker>, info: Res<TargetInfo>, mut warp: ResMut<Warp>, mut sim: ResMut<Sim>, mut mode: ResMut<Mode>, mut console: ResMut<Console>) {
+    if link.sim.is_none() {
+        if warp.active { unwarp(&mut warp, &mut sim, &mut mode); console.note("real link: viewer clock back to LIVE"); }
+        return;
+    }
+    if !cfg.tracking.sim_warp { return; }
+    if !warp.active && matches!(tracker.phase, Phase::Slew | Phase::Armed) {
+        if let Some(p) = &tracker.plan {
+            let until = (p.pass.aos_jd - info.clock_jd) * 86400.0;
+            if until > cfg.tracking.warp_lead_s + 5.0 {
+                let target = p.pass.aos_jd - cfg.tracking.warp_lead_s / 86400.0;
+                warp_to(&mut warp, &mut sim, &mut mode, target, cfg.tracking.warp_speed);
+                console.note(&format!("SIM WARP: AOS of {} is {} away; viewer clock -> {} at x{:.0}", p.name, crate::tracking::fmt_countdown(until), jd_utc_full(target), cfg.tracking.warp_speed));
+            }
+        }
+    }
+    if warp.active && matches!(tracker.phase, Phase::Idle | Phase::Done) {
+        unwarp(&mut warp, &mut sim, &mut mode);
+        console.note("SIM WARP over: viewer clock back to LIVE");
+    }
+}
+
+fn warp_to(warp: &mut Warp, sim: &mut Sim, mode: &mut Mode, target_jd: f64, speed: f64) {
+    if !warp.active { warp.prev_speed = sim.speed; warp.prev_mode_live = *mode == Mode::Live; warp.active = true; }
+    *mode = Mode::History;
+    sim.jd0 = sim.jd_hist0;
+    sim.t_max = ((sim.jd_end - sim.jd0) * 86400.0).max(0.0);
+    sim.t = ((target_jd - sim.jd0) * 86400.0).clamp(0.0, sim.t_max);
+    sim.speed = speed; sim.paused = false; sim.exhausted = false;
+}
+
+fn unwarp(warp: &mut Warp, sim: &mut Sim, mode: &mut Mode) {
+    warp.active = false;
+    sim.speed = warp.prev_speed;
+    *mode = Mode::Live;
+    sim.jd0 = now_jd(); sim.t = 0.0; sim.exhausted = false;
+    sim.t_max = ((sim.jd_end - sim.jd0) * 86400.0).max(0.0);
+}
+
+/// Angle between two sky directions (bearing, elevation), degrees
+pub fn angle_between(b1: f64, e1: f64, b2: f64, e2: f64) -> f64 {
+    let v = |b: f64, e: f64| { let (sb, cb) = b.to_radians().sin_cos(); let (se, ce) = e.to_radians().sin_cos(); [sb * ce, cb * ce, se] };
+    let (a, c) = (v(b1, e1), v(b2, e2));
+    (a[0] * c[0] + a[1] * c[1] + a[2] * c[2]).clamp(-1.0, 1.0).acos().to_degrees()
 }
 
 //------------------------------------------------------------------------------------------ text
@@ -580,21 +724,22 @@ pub fn jd_local(jd: f64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(unix.floor() as i64, 0)
         .map(|dt| dt.with_timezone(&chrono::Local).format("%H:%M:%S").to_string()).unwrap_or_else(|| "-".into())
 }
-fn jd_utc_full(jd: f64) -> String {
+pub fn jd_utc_full(jd: f64) -> String {
     let unix = (jd - 2440587.5) * 86400.0;
     chrono::DateTime::<chrono::Utc>::from_timestamp(unix.floor() as i64, 0).map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "-".into())
 }
 
-fn live_text(info: &TargetInfo, tracker: &Tracker, mount: &MountState, geom: &MountGeom) -> String {
+fn live_text(info: &TargetInfo, tracker: &Tracker, mount: &MountState, geom: &MountGeom, auto: bool) -> String {
     let mut s = String::new();
     match info.column {
-        None => { s += "TARGET     none: click a satellite in the viewer window\n"; }
+        None => { s += "TARGET     none: click a satellite in ORBIT VIEW\n"; }
         Some(_) => {
             s += &format!("TARGET     {}{}\n", info.name, info.norad.map_or(String::new(), |n| format!("   NORAD {n}")));
             if let Some((r, sc)) = info.rank { s += &format!("RANK       #{r}   score {sc:.3}\n"); }
         }
     }
-    s += &format!("CLOCK      {}{}\n", jd_utc_full(info.real_jd), if info.history_mode { "   (viewer in HISTORY mode: the dish follows real time)" } else { "" });
+    s += &format!("CLOCK      {}   {}{}\n", jd_utc_full(info.clock_jd), info.clock_label,
+        if info.time_scale != 1.0 { format!("   x{:.0}", info.time_scale) } else if info.history_mode && info.clock_label.starts_with("REAL") { "   (viewer in HISTORY mode: a real mount follows real time)".into() } else { String::new() });
     if info.column.is_some() {
         if info.have_data {
             let vis = if info.el >= 0.0 { "above the horizon" } else { "below the horizon" };
@@ -619,10 +764,15 @@ fn live_text(info: &TargetInfo, tracker: &Tracker, mount: &MountState, geom: &Mo
             None => {}
         }
     }
-    s += &format!("SEQUENCE   {:?}   {}\n", tracker.phase, tracker.message);
-    if let Some(p) = &tracker.plan { if let Some((a, e)) = tracker.last_cmd { s += &format!("           {}   last GO {:.2} {:.2}   {} commands\n", p.name, a, e, tracker.commands_sent); } }
-    if let Some((a, e)) = mount.fb { let (b, el) = geom.sky_of(a, e); s += &format!("DISH       bearing {:.1}   el {:.1}   (mount {:.1} / {:.1}){}\n", b, el, a, e, if mount.moving { "   moving" } else { "" }); }
-    s += "\nA arm   I aim   Escape abort";
+    if let Some((a, e)) = mount.fb {
+        let (b, el) = geom.sky_of(a, e);
+        let lock = match info.point_err_deg { Some(d) if d < 1.0 => format!("   LOCKED  error {d:.2} deg"), Some(d) => format!("   error {d:.1} deg"), None => String::new() };
+        s += &format!("DISH       bearing {:.1}   el {:.1}   (mount {:.1} / {:.1}){}{}\n", b, el, a, e, if mount.moving { "   moving" } else { "" }, lock);
+    }
+    s += &format!("\nPROCEDURE  {}   {}{}\n", tracker.phase.label(), tracker.message, if let Some((_, n)) = &tracker.target { if tracker.active() { format!("   [{n}]") } else { String::new() } } else { String::new() });
+    for st in &tracker.steps { s += &format!("  {} {:<10} {}\n", st.mark(), st.label, st.detail); }
+    if let Some((a, e)) = tracker.last_cmd { if tracker.active() { s += &format!("           last GO {:.2} {:.2}   {} commands\n", a, e, tracker.commands_sent); } }
+    s += &format!("\nA arm   I aim   W warp   Escape abort   AUTO {}", if auto { "on: a pick starts the procedure" } else { "off" });
     s
 }
 
@@ -637,14 +787,14 @@ fn motor_text(link: &SerialLink, mount: &MountState, motor: &Motor, geom: &Mount
     }
     if let Some(enc) = mount.encoder { s += &format!("ENCODER    {enc:.0}\n"); }
     s += &format!("LIMITS     az 0..{:.0}   el {:.0}..{:.0}   zero bearing {:.1}   rate {:.0} / {:.0} deg/s\n", geom.az_travel, geom.el_min, geom.el_max, geom.az_zero(), cfg.mount.az_rate_dps, cfg.mount.el_rate_dps);
-    s += &format!("STEP       {:.1} deg   mode {}\n", motor.step, if tracker.active() { "TRACKING (manual locked)" } else { "MANUAL" });
+    s += &format!("STEP       {:.1} deg   mode {}\n", motor.step, if tracker.active() { "PROCEDURE (manual locked)" } else { "MANUAL" });
     s += "\narrows jog   [ ] step   S stop   P park   H home";
     s
 }
 
 fn refresh_text(
     layout: Res<Layout>, cfg: Res<ControlConfig>, info: Res<TargetInfo>, tracker: Res<Tracker>, mount: Res<MountState>, geom: Res<Geom>,
-    link: Res<SerialLink>, motor: Res<Motor>, mut console: ResMut<Console>, time: Res<Time>, view: Res<MountView>,
+    link: Res<SerialLink>, motor: Res<Motor>, mut console: ResMut<Console>, time: Res<Time>, view: Res<MountView>, auto: Res<AutoArm>,
     mut bodies: Query<(&TileBody, &mut Text)>, mut titles: Query<(&TileTitle, &mut Text), Without<TileBody>>,
     mut input_line: Query<&mut Text, (With<ConsoleInputText>, Without<TileBody>, Without<TileTitle>)>,
 ) {
@@ -652,7 +802,7 @@ fn refresh_text(
     for (b, mut text) in &mut bodies {
         let Some(r) = layout.rects[b.0.idx()] else { continue };
         text.0 = match b.0 {
-            Tile::Live => live_text(&info, &tracker, &mount, &geom.0),
+            Tile::Live => live_text(&info, &tracker, &mount, &geom.0, auto.0),
             Tile::Motor => motor_text(&link, &mount, &motor, &geom.0, &cfg, &tracker),
             Tile::Mount | Tile::Globe => { let _ = view; String::new() }
             Tile::Console => {
@@ -666,9 +816,13 @@ fn refresh_text(
     }
     for (t, mut text) in &mut titles {
         text.0 = match t.0 {
-            Tile::Mount => match mount.fb { Some((a, e)) => format!("3 MOUNT   az {:.1}  el {:.1}   {}", a, e, if mount.moving { "MOVING" } else { "" }), None => "3 MOUNT   (no telemetry)".into() },
+            Tile::Mount => match mount.fb {
+                Some((a, e)) => format!("3 MOUNT   az {:.1}  el {:.1}   {}{}", a, e, if mount.moving { "MOVING" } else { "" },
+                    match info.point_err_deg { Some(d) if d < 1.0 && tracker.phase == Phase::Tracking => format!("   LOCKED {d:.2} deg"), Some(d) if tracker.phase == Phase::Tracking => format!("   error {d:.1} deg"), _ => String::new() }),
+                None => "3 MOUNT   (no telemetry)".into(),
+            },
             Tile::Console => format!("4 SERIAL CONSOLE   {}", link.port_name()),
-            Tile::Live => format!("1 LIVE DATA   {}", match tracker.phase { Phase::Idle => "", Phase::Armed => "ARMED", Phase::Tracking => "TRACKING", Phase::Done => "DONE" }),
+            Tile::Live => format!("1 LIVE DATA   {}", if tracker.phase == Phase::Idle { "" } else { tracker.phase.label() }),
             Tile::Globe => format!("0 ORBIT VIEW   {}{}", if info.history_mode { "HISTORY" } else { "LIVE" },
                                    if info.column.is_some() { format!("   pick {}", info.name) } else { String::new() }),
             other => other.title().to_string(),
@@ -683,23 +837,27 @@ fn refresh_text(
 fn draw_overlays(
     cw: Res<CmdWindow>, windows: Query<&Window>, layout: Res<Layout>, pal: Res<Palette>, geom: Res<Geom>, view: Res<MountView>,
     mount: Res<MountState>, info: Res<TargetInfo>, tracker: Res<Tracker>, cfg: Res<ControlConfig>, mut gizmos: Gizmos<CmdLines>,
-    mut dividers: Gizmos<CmdDividers>, booting: Res<Booting>,
+    mut dividers: Gizmos<CmdDividers>, booting: Res<Booting>, reveal: Option<Res<Reveal>>, time: Res<Time>,
 ) {
     if booting.0 { return; }
     let Some(w) = cw.0.and_then(|e| windows.get(e).ok()) else { return };
     let (ww, wh) = (w.width(), w.height());
     let to_world = |p: Vec2| Vec2::new(p.x - ww / 2.0, wh / 2.0 - p.y);
     let title_h = cfg.window.font_size + 8.0;
-    //Bright dividers down the middle of every gap, and a frame around the page
+    let now = time.elapsed_secs_f64();
+    //Bright dividers down the middle of every gap, and a frame around the page; after the boot page
+    //they draw themselves in from one end
+    let k = reveal.as_ref().map_or(1.0, |r| r.lines(now)) as f32;
     if pal.divider != Color::NONE {
-        for (a, b) in &layout.dividers { dividers.line_2d(to_world(*a), to_world(*b), pal.divider); }
+        for (a, b) in &layout.dividers { dividers.line_2d(to_world(*a), to_world(*a + (*b - *a) * k), pal.divider); }
         let a = layout.area; let g = layout.gap / 2.0;
         let corners = [Vec2::new(a.x - g, a.y - g), Vec2::new(a.x + a.w + g, a.y - g), Vec2::new(a.x + a.w + g, a.y + a.h + g), Vec2::new(a.x - g, a.y + a.h + g)];
-        for i in 0..4 { dividers.line_2d(to_world(corners[i]), to_world(corners[(i + 1) % 4]), pal.divider.with_alpha(0.6)); }
+        for i in 0..4 { let (p0, p1) = (corners[i], corners[(i + 1) % 4]); dividers.line_2d(to_world(p0), to_world(p0 + (p1 - p0) * k), pal.divider.with_alpha(0.6)); }
     }
+    let revealed = |t: Tile| reveal.as_ref().map_or(true, |r| r.tile(now, ALL.iter().position(|x| *x == t).unwrap_or(0)) >= 1.0);
     let target_sky = if info.have_data && info.el > -5.0 { Some((info.bearing, info.el)) } else { None };
     //MOUNT tile: the gimbal wireframe
-    if let Some(r) = layout.rects[Tile::Mount.idx()] {
+    if let Some(r) = layout.rects[Tile::Mount.idx()].filter(|_| revealed(Tile::Mount)) {
         let body = Rect { x: r.x + 4.0, y: r.y + title_h + 4.0, w: r.w - 8.0, h: r.h - title_h - 8.0 };
         let colors = MountColors { fixed: pal.line_dim, head: pal.line, cradle: pal.line, dish: pal.bright, compass: pal.dim, gap: pal.warn.with_alpha(0.5), ray_fb: pal.bright, ray_cmd: pal.accent, ray_target: pal.good };
         let mut lines = Vec::with_capacity(600);
@@ -709,8 +867,8 @@ fn draw_overlays(
         }
     }
     //LIVE tile: polar sky plot on the right (only when the tile is wide enough)
-    if let Some(r) = layout.rects[Tile::Live.idx()] {
-        if r.w > 560.0 && r.h > 220.0 {
+    if let Some(r) = layout.rects[Tile::Live.idx()].filter(|_| revealed(Tile::Live)) {
+        if r.w > 780.0 && r.h > 220.0 {
             let radius = ((r.h - title_h - 70.0) / 2.0).min(150.0);
             let c = Vec2::new(r.x + r.w - radius - 14.0, r.y + title_h + radius + 12.0);
             let polar = |b: f64, e: f64| -> Vec2 { let rr = radius * ((90.0 - e.clamp(-5.0, 90.0)) / 90.0) as f32; c + Vec2::new(b.to_radians().sin() as f32, -(b.to_radians().cos() as f32)) * rr };
@@ -743,7 +901,7 @@ fn draw_overlays(
         }
     }
     //Focus mark: a short bright bar under the focused tile's title
-    if let Some(r) = layout.rects[layout.focus.idx()] {
+    if let Some(r) = layout.rects[layout.focus.idx()].filter(|_| revealed(layout.focus)) {
         let y = r.y + title_h;
         gizmos.line_2d(to_world(Vec2::new(r.x + 1.0, y)), to_world(Vec2::new(r.x + r.w - 1.0, y)), pal.border_focus.with_alpha(0.8));
     }
