@@ -9,7 +9,7 @@ config = "../perigee-viewer/viewer.toml"   # the viewer's settings (look, statio
 [data]
 # Folder holding Perigee's outputs (SORTED_SATS.json, ELSET.json, NORADs.json, SATELLITE_RANKS.json, ...).
 # "" = whatever the viewer's orbit_file points at. The engine writes into the folder it is run from, so
-# this is ../Perigee when you run `perigee` there and ../Perigee/src when the systemd timer runs it.
+# this is ../Perigee (the rank timer uses the same folder).
 dir = "../Perigee"
 
 [window]

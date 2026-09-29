@@ -25,7 +25,7 @@ perigee-control/            this crate: `cargo run --release` from here
 ## Running
 
 ```
-cd ~/projects/perigee-control
+cd ~/projects/perigee/perigee-control
 cargo run --release
 ```
 
@@ -184,5 +184,5 @@ calling it), public access to the resources this crate reads (`Selected`, `Catal
   viewport and ignore it outside; the camera's aspect and the info-box clamp use the viewport size.
   With no viewport (the viewer on its own) all of this is exactly the old behaviour.
 
-The desktop binary and the TV build behave as before. The engine (Perigee) gained the `perigee login`
+The desktop viewer binary behaves as before. The engine (Perigee) gained the `perigee login`
 subcommand (`spacetrack::login_check`) used by the boot page; nothing else in it changed.
