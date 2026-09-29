@@ -37,6 +37,9 @@ border = "#3BEB6B"    # tile frame colour ("" = the viewer's dim text colour); t
 # for a full run (fetch, propagate, rank), `perigee rank` to re-rank the data on disk. It runs in [data] dir.
 bin = "../Perigee/target/release/perigee"   # when this is not built, `cargo run --release` in dir is used
 dir = "../Perigee"                          # the engine's crate; its .env holds the saved SPACETRACK_USER / SPACETRACK_PASS
+# Which orbits a full refresh pulls: "leo" (low passes), "geo" (the geostationary belt: GOES and its
+# neighbours, parked pointing rather than tracking) or "all" (both). [O] on the boot menu cycles it.
+orbits = "leo"
 
 [boot]
 enabled = true        # false: no boot page, no login, straight to the tiles

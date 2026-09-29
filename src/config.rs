@@ -67,8 +67,9 @@ impl Default for TilesCfg {
 pub struct PerigeeCfg {
     pub bin: String,    // the built engine; when it is missing, `cargo run --release` in `dir` is used instead
     pub dir: String,    // the engine's crate (its .env holds the saved Space-Track credentials)
+    pub orbits: String, // which orbits a full refresh pulls: "leo" (default), "geo" (the belt: GOES, ...), "all"
 }
-impl Default for PerigeeCfg { fn default() -> Self { Self { bin: "../Perigee/target/release/perigee".into(), dir: "../Perigee".into() } } }
+impl Default for PerigeeCfg { fn default() -> Self { Self { bin: "../Perigee/target/release/perigee".into(), dir: "../Perigee".into(), orbits: "leo".into() } } }
 
 //The boot page shown before the tiles: checks, Space-Track login, engine run, load
 #[derive(Deserialize, Clone, Debug)]

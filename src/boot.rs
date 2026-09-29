@@ -53,13 +53,15 @@ struct Runner { child: Child, rx: Mutex<Receiver<String>>, started: std::time::I
 impl Runner {
     /// Start `perigee <sub>` in the data folder with the credentials in its environment (an empty
     /// value leaves the engine's own .env in charge of that variable)
-    fn spawn(cfg: &ControlConfig, kind: RunKind, user: &str, pass: &str) -> Result<(Runner, String), String> {
+    fn spawn(cfg: &ControlConfig, kind: RunKind, user: &str, pass: &str, orbits: &str) -> Result<(Runner, String), String> {
         let sub = match kind { RunKind::Login => Some("login"), RunKind::Full => None, RunKind::Rank => Some("rank") };
         let (mut cmd, desc) = engine_command(cfg, sub)?;
         let cwd = if cfg.data.dir.is_empty() { cfg.perigee.dir.clone() } else { cfg.data.dir.clone() };
         cmd.current_dir(&cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         if !user.is_empty() { cmd.env("SPACETRACK_USER", user); }
         if !pass.is_empty() { cmd.env("SPACETRACK_PASS", pass); }
+        //Which orbits a full refresh pulls; the engine defaults to LEO on its own if this is empty
+        if kind == RunKind::Full && !orbits.is_empty() { cmd.env("PERIGEE_ORBITS", orbits); }
         let mut child = cmd.spawn().map_err(|e| format!("{desc}: {e}"))?;
         let (tx, rx) = channel::<String>();
         let readers: [Option<Box<dyn std::io::Read + Send>>; 2] = [
@@ -148,6 +150,7 @@ pub struct Boot {
     user: String, pass: String, field: usize, saved_pass: bool, logged_in: bool,
     run: Option<Runner>, rng: u64, shown_log: usize, reloaded: bool, checked: bool,
     nominal_at: Option<f64>,     // Entrance: when every subsystem reached 100 %
+    orbits: String,              // LEO / GEO / ALL for the next full refresh; seeded from [perigee] orbits
 }
 
 /// Left behind when the boot page lifts: the control page brings the tiles online one by one from
@@ -218,6 +221,7 @@ impl Plugin for BootPlugin {
                 stage: Stage::Check, t: 0.0, since: 0.0, lines: Vec::new(), pending: VecDeque::new(), next_emit: 0.0,
                 user: String::new(), pass: String::new(), field: 0, saved_pass: false, logged_in: false,
                 run: None, rng: 0, shown_log: 0, reloaded: false, checked: false, nominal_at: None,
+                orbits: String::new(),
             })
             .add_systems(PostStartup, spawn_boot_ui)
             .add_systems(Update, (boot_tick, boot_rain, boot_render).chain().run_if(|b: Res<Booting>| b.0));
@@ -313,8 +317,10 @@ fn queue_checks(boot: &mut Boot, cfg: &ControlConfig, vcfg: &ViewerCfg, log: &Bo
 
 fn start_engine(boot: &mut Boot, cfg: &ControlConfig, kind: RunKind, title: &str) {
     let (u, p) = if kind == RunKind::Rank { (String::new(), String::new()) } else { (boot.user.clone(), boot.pass.clone()) };
+    let orbits = boot.orbits.clone();
     boot.say(Kind::Title, title);
-    match Runner::spawn(cfg, kind, &u, &p) {
+    if kind == RunKind::Full { boot.say(Kind::Dim, format!("       ORBITS {}", orbits.to_uppercase())); }
+    match Runner::spawn(cfg, kind, &u, &p, &orbits) {
         Ok((r, desc)) => { boot.say(Kind::Dim, format!("       EXEC {desc}")); boot.run = Some(r); boot.go(Stage::Run); }
         Err(e) => boot.say(Kind::Err, format!("[FAIL] {}", e.to_uppercase())),
     }
@@ -327,6 +333,11 @@ fn boot_tick(
 ) {
     boot.t += time.delta_secs_f64();
     let t = boot.t;
+    //Which orbits the next full refresh pulls: from [perigee] orbits until O cycles it
+    if boot.orbits.is_empty() {
+        let o = cfg.perigee.orbits.trim().to_lowercase();
+        boot.orbits = if matches!(o.as_str(), "geo" | "all") { o } else { "leo".into() };
+    }
     //PERIGEE_BOOT_AUTO=1 takes the direct-entry path by itself once the checks are up; =demo presses Enter at
     //the logon (credential on file) and data prompts after a pause, as an operator would (for tests, recordings)
     let auto = std::env::var("PERIGEE_BOOT_AUTO").unwrap_or_default();
@@ -397,7 +408,7 @@ fn boot_tick(
                 else {
                     let (u, p) = (boot.user.clone(), boot.pass.clone());
                     boot.say(Kind::Info, format!("       CONNECTING   space-track.org   IDENT {u}{}", if p.is_empty() { "   CREDENTIAL ON FILE" } else { "" }));
-                    match Runner::spawn(&cfg, RunKind::Login, &u, &p) {
+                    match Runner::spawn(&cfg, RunKind::Login, &u, &p, "") {
                         Ok((r, desc)) => { boot.say(Kind::Dim, format!("       EXEC {desc}")); boot.run = Some(r); boot.go(Stage::Verify); }
                         Err(e) => boot.say(Kind::Err, format!("[FAIL] {}", e.to_uppercase())),
                     }
@@ -415,6 +426,16 @@ fn boot_tick(
                     KeyCode::KeyF if boot.logged_in => start_engine(&mut boot, &cfg, RunKind::Full, "FULL CATALOG REFRESH"),
                     KeyCode::KeyF => boot.say(Kind::Warn, "[ -- ] CATALOG REFRESH REQUIRES A SPACE-TRACK SESSION   L TO LOG ON"),
                     KeyCode::KeyR => start_engine(&mut boot, &cfg, RunKind::Rank, "RE-RANK"),
+                    KeyCode::KeyO => {
+                        boot.orbits = match boot.orbits.as_str() { "leo" => "geo", "geo" => "all", _ => "leo" }.to_string();
+                        let what = match boot.orbits.as_str() {
+                            "geo" => "GEOSTATIONARY BELT ONLY   GOES AND ITS NEIGHBOURS, PARKED POINTING",
+                            "all" => "LOW ORBIT + THE BELT",
+                            _ => "LOW ORBIT",
+                        };
+                        let shown = boot.orbits.to_uppercase();
+                        boot.say(Kind::Info, format!("[ OK ] ORBITS {shown}   {what}"));
+                    }
                     KeyCode::KeyL => { boot.field = 1; boot.go(Stage::Login); }
                     _ => {}
                 }
@@ -516,8 +537,10 @@ fn boot_render(
             "ENTER  SUBMIT          TAB  FIELD          F2  BYPASS LOGON          ESC  DIRECT ENTRY".into()),
         Stage::Verify => (format!("  {spinner}  AUTHENTICATING   space-track.org   {:.1} S", boot.run.as_ref().map_or(0.0, |r| r.secs())), "ESC  ABORT".into()),
         Stage::Menu => (
-            format!("DATA:\n  [ENTER]  PROCEED WITH DATA ON FILE\n  [F]      FULL CATALOG REFRESH     SPACE-TRACK + SATNOGS, PROPAGATE, RANK   (ABOUT ONE MINUTE){}\n  [R]      RE-RANK                  DATA ON FILE, CURRENT TIME{}",
-                    if boot.logged_in { "" } else { "   [SESSION REQUIRED]" }, if boot.logged_in { "" } else { "\n  [L]      LOG ON" }),
+            format!("DATA:\n  [ENTER]  PROCEED WITH DATA ON FILE\n  [F]      FULL CATALOG REFRESH     SPACE-TRACK + SATNOGS, PROPAGATE, RANK   (ABOUT ONE MINUTE){}\n  [R]      RE-RANK                  DATA ON FILE, CURRENT TIME\n  [O]      ORBITS: {}{}",
+                    if boot.logged_in { "" } else { "   [SESSION REQUIRED]" },
+                    match boot.orbits.as_str() { "geo" => "GEOSTATIONARY BELT", "all" => "LOW ORBIT + BELT", _ => "LOW ORBIT" },
+                    if boot.logged_in { "" } else { "\n  [L]      LOG ON" }),
             "THE ENGINE WRITES INTO THE DATA STORE. THE VIEWER RELOADS WHEN IT COMPLETES.".into()),
         Stage::Run => (format!("  {spinner}  ENGINE RUNNING   {:.0} S", boot.run.as_ref().map_or(0.0, |r| r.secs())), "ESC  STOP ENGINE".into()),
         Stage::Entrance => {
