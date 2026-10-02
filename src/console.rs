@@ -73,7 +73,11 @@ impl Console {
             "/close             close the link",
             "/sim               switch to the built-in mount simulator",
             "/clear             clear the scrollback",
-            "mount commands: PING  ID  ?  GO az el  AZ deg  EL deg  STOP  PARK  RATE az el  TEL hz  RAW AZ|EL us",
+            "/here AZ [EL]      the dish points at true bearing AZ (and elevation EL) right now: tie the mount to the sky there",
+            "/here              show the sky tie in use, and where the dish points",
+            "/here clear        forget the sky tie (and any /bearing): the mount is uncalibrated again",
+            "/bearing [DEG]     show, or save and use, a measured centre bearing (docs/calibration.md 6.7)",
+            "mount commands: PING  ID  ?  GO az el  AZ deg  EL deg  STOP  PARK  RATE az el  TEL hz  RAW AZ|EL us  ZERO az el  CAL  OFF",
         ] { self.note(l); }
     }
 }

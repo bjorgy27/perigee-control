@@ -125,7 +125,7 @@ pub struct TargetInfo {
     pub clock_jd: f64,                  // the clock the dish follows: real time, or the viewer's when simulating
     pub time_scale: f64,                // clock seconds per real second
     pub clock_label: &'static str,
-    pub point_err_deg: Option<f64>,     // angle between the measured boresight and the satellite
+    pub point_err_deg: Option<f64>,     // angle between the estimated boresight (firmware settle model) and the satellite: not the real error
 }
 
 /// auto_arm at run time (AUTO button / "/auto" toggles it; control.toml sets the start value)
@@ -376,7 +376,7 @@ fn page_keys(input: Res<CmdInput>, mut layout: ResMut<Layout>, mut drag: ResMut<
     }
 }
 
-fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<Console>, mut link: ResMut<SerialLink>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut tracker: ResMut<Tracker>, mut auto: ResMut<AutoArm>) {
+fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<Console>, mut link: ResMut<SerialLink>, mut cfg: ResMut<ControlConfig>, mut geom: ResMut<Geom>, mut tracker: ResMut<Tracker>, mut auto: ResMut<AutoArm>, mount: Res<MountState>) {
     if !input.focused || layout.focus != Tile::Console || input.ctrl { return; }
     let typed = input.typed();
     if !typed.is_empty() { console.input.push_str(&typed); }
@@ -390,7 +390,7 @@ fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<C
             KeyCode::Enter | KeyCode::NumpadEnter => {
                 if let Some(line) = console.submit() {
                     if let Some(cmd) = line.strip_prefix('/') {
-                        local_command(cmd, &mut console, &mut link, &cfg, &geom.0, &mut tracker, &mut auto);
+                        local_command(cmd, &mut console, &mut link, &mut cfg, &mut geom.0, &mut tracker, &mut auto, &mount);
                     } else if link.is_open() {
                         link.send(&line);
                     } else {
@@ -403,7 +403,7 @@ fn console_keys(input: Res<CmdInput>, layout: Res<Layout>, mut console: ResMut<C
     }
 }
 
-fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &ControlConfig, geom: &MountGeom, tracker: &mut Tracker, auto: &mut AutoArm) {
+fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &mut ControlConfig, geom: &mut MountGeom, tracker: &mut Tracker, auto: &mut AutoArm, mount: &MountState) {
     let mut it = cmd.split_whitespace();
     match it.next().unwrap_or("") {
         "help" => console.help(),
@@ -420,6 +420,79 @@ fn local_command(cmd: &str, console: &mut Console, link: &mut SerialLink, cfg: &
         "sim" => { link.open_sim(geom, cfg.mount.az_rate_dps, cfg.mount.el_rate_dps); console.note("simulator on"); }
         "clear" => console.lines.clear(),
         "auto" => { auto.0 = match it.next() { Some("on") => true, Some("off") => false, _ => !auto.0 }; console.note(&format!("auto procedure on pick: {}", if auto.0 { "ON" } else { "OFF" })); }
+        //The measured north tie (docs/calibration.md 6.7): saved to the [calibration] file and used at once
+        "bearing" => match it.next() {
+            None => console.note(&match cfg.mount.az_center_bearing_deg {
+                Some(b) => format!("centre bearing {b:.3} deg, measured, kept in {}", cfg.calibration.file),
+                None => format!("uncalibrated: nominal {:.1} deg. Point the dish at something you know and /here AZ EL, or measure it (docs/calibration.md 6.7) and /bearing DEG", cfg.mount.az_center_or_nominal()),
+            }),
+            Some(_) if tracker.active() => console.note("the procedure is running: ABORT before changing the mount frame"),
+            Some(v) => match v.parse::<f64>() {
+                Ok(b) => match cfg.set_center_bearing(b) {
+                    Ok(path) => {
+                        *geom = MountGeom::from_cfg(&cfg.mount);
+                        console.note(&format!("centre bearing {:.3} deg saved to {path} and in use now", cfg.mount.az_center_or_nominal()));
+                    }
+                    Err(e) => console.note(&format!("bearing not saved: {e}")),
+                },
+                Err(_) => console.note("usage: /bearing DEG   (the true bearing the dish faces at mount azimuth 225)"),
+            },
+        },
+        //"The dish is pointing at this true bearing (and elevation) right now": ties the mount to the sky
+        //at a reference you can see, from where the firmware says the dish is (docs/calibration.md 6.7)
+        "here" => {
+            const USAGE: &str = "usage: /here AZ [EL]   (the true bearing, and elevation, the dish points at right now)   or   /here clear";
+            let (a, e) = (it.next(), it.next());
+            match a {
+                None => {
+                    let tie = match cfg.mount.az_center_bearing_deg {
+                        Some(b) => format!("centre bearing {b:.3} deg, elevation correction {:+.2} deg, kept in {}", cfg.mount.el_correction_deg, cfg.calibration.file),
+                        None => format!("uncalibrated (nominal frame {:.1} deg): point the dish at something you know, then /here AZ EL", cfg.mount.az_center_or_nominal()),
+                    };
+                    console.note(&tie);
+                    if let Some((m, b)) = cfg.calibration.here { console.note(&format!("last /here: mount azimuth {m:.2} faced bearing {b:.2}")); }
+                    if let Some((am, em)) = mount.fb { let (sb, se) = geom.sky_of(am, em); console.note(&format!("the dish now: mount {am:.2} {em:.2} = sky bearing {sb:.2} elevation {se:.2}")); }
+                }
+                Some(_) if tracker.active() => console.note("the procedure is running: ABORT before changing the mount frame"),
+                Some("clear") => match cfg.clear_here() {
+                    Ok(path) => {
+                        *geom = MountGeom::from_cfg(&cfg.mount);
+                        console.note(&format!("sky tie cleared ({path}): uncalibrated, nominal frame {:.1} deg, no elevation correction. A real mount will not track until /here or /bearing", cfg.mount.az_center_or_nominal()));
+                    }
+                    Err(e) => console.note(&format!("not cleared: {e}")),
+                },
+                Some(av) => {
+                    let (Ok(az), Ok(el)) = (av.parse::<f64>(), e.map(str::parse::<f64>).transpose()) else { console.note(USAGE); return; };
+                    //Where the dish is: the firmware's own estimate, and only once it is anchored and still
+                    let at = match mount.pose {
+                        Some(p) if !p.known => { console.note("position unknown: ZERO az el first, so the firmware knows where the dish is"); return; }
+                        Some(p) if p.moving => { console.note("the dish is still moving: wait until it stops, then /here again"); return; }
+                        Some(p) => p.settled,
+                        None => { console.note("no T4 telemetry from the mount yet: open the link (CONNECT, /open or /sim) first"); return; }
+                    };
+                    match cfg.set_here(at, az, el) {
+                        Ok((path, r)) => {
+                            *geom = MountGeom::from_cfg(&cfg.mount);
+                            let el_txt = el.map_or(String::new(), |v| format!(" elevation {v:.2}"));
+                            console.note(&format!("tied: mount {:.2} {:.2} faces bearing {:.2}{el_txt}. Saved to {path}, in use now", at.0, at.1, az.rem_euclid(360.0)));
+                            console.note(&format!("centre bearing {:.3} deg, elevation correction {:+.2} deg", r.center, r.el_corr));
+                            let (db, de) = ((r.before.0 - az + 540.0).rem_euclid(360.0) - 180.0, el.map_or(0.0, |v| r.before.1 - v));
+                            console.note(&format!("the old tie had the dish at bearing {:.2} elevation {:.2}: off by {db:+.2} az, {de:+.2} el", r.before.0, r.before.1));
+                            if link.sim.is_some() { console.note("this was the simulator: the tie is saved and a real mount will use it too. /here clear before connecting the mount"); }
+                            match r.scale {
+                                Some((turn, off, k)) if (k - 1.0).abs() >= 0.003 => console.note(&format!(
+                                    "{turn:.0} deg of turn from the last /here the old tie was {off:+.2} deg off: the azimuth motor scale is off by {:+.1} %. \
+                                     Multiply AZ_CAL.us_per_deg in firmware src/limits.rs by {k:.4} and reflash, then /here clear and tie it again. \
+                                     Until then pointing is exact here and drifts away from here", (k - 1.0) * 100.0)),
+                                Some((turn, off, _)) => console.note(&format!("{turn:.0} deg of turn from the last /here the old tie was {off:+.2} deg off: the azimuth motor scale is right (within 0.3 %)")),
+                                None => {}
+                            }
+                        }
+                        Err(e) => console.note(&format!("not tied: {e}")),
+                    }
+                }
+            }
+        }
         other => console.note(&format!("unknown local command /{other}; /help")),
     }
 }
@@ -475,6 +548,13 @@ fn clock_tick(cfg: Res<ControlConfig>, link: Res<SerialLink>, sim: Res<Sim>, mod
 //------------------------------------------------------------------------------------------ link
 fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link: ResMut<SerialLink>, mut console: ResMut<Console>, mut mount: ResMut<MountState>, mut tracker: ResMut<Tracker>, info: Res<TargetInfo>) {
     let now = time.elapsed_secs_f64();
+    //Echo what was sent before anything that arrives in reply, so a command always appears above its answer
+    //(commands sent by later systems last frame come first). While TRACKING, the GO stream (4 a second, each
+    //answered OK GO) stays out of the scrollback: it would push everything else out of the 600 lines in about
+    //75 s. LIVE DATA counts the commands, and ERR replies still show.
+    let quiet = tracker.phase == Phase::Tracking;
+    let echo = |link: &mut SerialLink, console: &mut Console| for s in std::mem::take(&mut link.sent) { if !(quiet && s.starts_with("GO ")) { console.tx(&s); } };
+    echo(&mut link, &mut console);
     //Open something: the configured port when it exists, else the simulator when allowed
     if !link.is_open() && now >= link.next_reconnect {
         link.next_reconnect = now + cfg.serial.reconnect_seconds.max(1.0);
@@ -482,20 +562,19 @@ fn link_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut link
                    else if std::path::Path::new(&cfg.serial.port).exists() { Some(cfg.serial.port.clone()) } else { None };
         match port {
             Some(p) => match link.open(&p, cfg.serial.baud) {
-                Ok(()) => { console.note(&format!("opened {p} at {}", cfg.serial.baud)); hello(&mut link, &cfg); }
+                Ok(()) => { console.note(&format!("opened {p} at {}", cfg.serial.baud)); hello(&mut link, &cfg); echo(&mut link, &mut console); }
                 Err(e) => console.note(&format!("open {p} failed: {e}")),
             },
-            None if cfg.serial.simulate => { link.open_sim(&geom.0, cfg.mount.az_rate_dps, cfg.mount.el_rate_dps); console.note("no serial port: mount simulator on"); hello(&mut link, &cfg); }
+            None if cfg.serial.simulate => { link.open_sim(&geom.0, cfg.mount.az_rate_dps, cfg.mount.el_rate_dps); console.note("no serial port: mount simulator on"); hello(&mut link, &cfg); echo(&mut link, &mut console); }
             None => {}
         }
     }
     let was_open = link.is_open();
     for line in link.poll(time.delta_secs_f64(), info.time_scale) {
         let telemetry = mount.ingest(&line);
-        if !telemetry { console.rx(&line); }
-        if line.starts_with("READY") { hello(&mut link, &cfg); }
+        if !telemetry && !(quiet && line.starts_with("OK GO ")) { console.rx(&line); }
+        if line.starts_with("READY") { hello(&mut link, &cfg); echo(&mut link, &mut console); }
     }
-    for s in std::mem::take(&mut link.sent) { console.tx(&s); }
     if was_open && !link.is_open() {
         console.note(&format!("link lost: {}", link.last_error));
         if tracker.active() { tracker.abort("link lost"); }
@@ -581,7 +660,10 @@ fn target_tick(
         match find_next_pass(&track, &sta, jd, jd + cfg.tracking.lookahead_hours / 24.0, mask) {
             Some(pass) => {
                 let samples = sample_pass(&track, &sta, &pass, cfg.tracking.sample_seconds);
-                match geom.0.solve_path(&samples) {
+                //Plan the whole pass's wrap from where the azimuth axis actually is, so the chosen
+                //starting turn is the one with the shortest pre-position slew and no mid-pass unwind.
+                let from_az = mount.fb.or(mount.cmd).map(|p| p.0);
+                match geom.0.solve_path(&samples, from_az, cfg.mount.az_rate_dps) {
                     Some(path) => { info.preview_note.clear(); info.preview = Some(Plan { column: col, name: info.name.clone(), pass, samples, path }); }
                     None => { info.preview = None; info.preview_note = "pass too short to solve".into(); }
                 }
@@ -616,7 +698,7 @@ fn apply_actions(
             Action::StepCycle => { let i = steps.iter().position(|s| (*s - motor.step).abs() < 1e-9).unwrap_or(0); motor.step = steps[(i + 1) % steps.len()]; }
             Action::Stop => { if tracker.active() { tracker.abort("STOP"); } link.send("STOP"); }
             Action::Park => link.send("PARK"),
-            Action::Home => { let (az, el) = geom.0.clamp(geom.0.az_travel / 2.0, cfg.mount.home_el_deg); link.send(&format!("GO {az:.2} {el:.2}")); }
+            Action::Home => { let (az, el) = geom.0.clamp((geom.0.az_lo + geom.0.az_hi) / 2.0, cfg.mount.home_el_deg); link.send(&format!("GO {az:.2} {el:.2}")); }
             Action::Connect => { link.close(); link.next_reconnect = 0.0; console.note("reconnecting"); }
             Action::Disconnect => { if tracker.active() { tracker.abort("link closed"); } link.close(); link.next_reconnect = f64::MAX; console.note("link closed (CONNECT to reopen)"); }
             Action::Sim => { link.open_sim(&geom.0, cfg.mount.az_rate_dps, cfg.mount.el_rate_dps); link.next_reconnect = f64::MAX; console.note("simulator on"); hello(&mut link, &cfg); }
@@ -624,9 +706,9 @@ fn apply_actions(
             Action::Aim => {
                 //Point at the satellite where it is right now, by the shortest move from the current pose
                 if !info.have_data { console.note(&format!("nothing to aim at: {}", if info.column.is_none() { "pick a satellite in ORBIT VIEW" } else { info.preview_note.as_str() })); continue; }
-                if info.el < geom.0.el_min { console.note(&format!("{} is below the horizon (el {:.1})", info.name, info.el)); continue; }
+                if geom.0.mount_el(info.el) < geom.0.el_min { console.note(&format!("{} is below the lowest elevation the mount reaches (el {:.1})", info.name, info.el)); continue; }
                 match geom.0.nearest_pose(info.bearing, info.el, base) {
-                    Some((az, el, flip)) => { console.note(&format!("AIM {}: bearing {:.1} el {:.1} -> mount {:.2} {:.2} ({})", info.name, info.bearing, info.el, az, el, flip.name())); link.send(&format!("GO {az:.2} {el:.2}")); }
+                    Some((az, el)) => { console.note(&format!("AIM {}: bearing {:.1} el {:.1} -> mount {:.2} {:.2}", info.name, info.bearing, info.el, az, el)); link.send(&format!("GO {az:.2} {el:.2}")); }
                     None => console.note("no mount pose reaches that direction"),
                 }
             }
@@ -658,9 +740,10 @@ fn tracker_tick(time: Res<Time>, cfg: Res<ControlConfig>, geom: Res<Geom>, mut t
             let inp = Inputs {
                 now_jd: info.clock_jd, app_s: time.elapsed_secs_f64(), time_scale: info.time_scale,
                 link_open: link.is_open(), link_name: link.port_name(), firmware_alive: mount.alive(),
+                simulated: link.sim.is_some(), calibrated: cfg.mount.calibrated(),
                 have_data: info.have_data, data_note: info.preview_note.clone(),
                 preview: info.preview.as_ref(), preview_note: info.preview_note.clone(),
-                fb: mount.fb, moving: mount.moving,
+                fb: mount.fb, moving: mount.moving, pose: mount.pose,
                 az_rate_limit: cfg.mount.az_rate_dps, el_rate_limit: cfg.mount.el_rate_dps,
             };
             for cmd in tracker.tick(&inp, &geom.0, &cfg.tracking) { link.send(&cmd); }
@@ -729,67 +812,109 @@ pub fn jd_utc_full(jd: f64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(unix.floor() as i64, 0).map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string()).unwrap_or_else(|| "-".into())
 }
 
-fn live_text(info: &TargetInfo, tracker: &Tracker, mount: &MountState, geom: &MountGeom, auto: bool) -> String {
+fn live_text(info: &TargetInfo, tracker: &Tracker, auto: bool) -> String {
     let mut s = String::new();
     match info.column {
         None => { s += "TARGET     none: click a satellite in ORBIT VIEW\n"; }
         Some(_) => {
-            s += &format!("TARGET     {}{}\n", info.name, info.norad.map_or(String::new(), |n| format!("   NORAD {n}")));
-            if let Some((r, sc)) = info.rank { s += &format!("RANK       #{r}   score {sc:.3}\n"); }
+            s += &format!("TARGET     {}{}{}\n", info.name, info.norad.map_or(String::new(), |n| format!("   NORAD {n}")),
+                info.rank.map_or(String::new(), |(r, sc)| format!("   rank #{r}  {sc:.2}")));
         }
     }
-    s += &format!("CLOCK      {}   {}{}\n", jd_utc_full(info.clock_jd), info.clock_label,
-        if info.time_scale != 1.0 { format!("   x{:.0}", info.time_scale) } else if info.history_mode && info.clock_label.starts_with("REAL") { "   (viewer in HISTORY mode: a real mount follows real time)".into() } else { String::new() });
+    let clock = if info.clock_label.starts_with("SIM") { "sim clock" } else { "real clock" };
+    s += &format!("CLOCK      {}   {clock}{}\n", jd_utc_full(info.clock_jd),
+        if info.time_scale != 1.0 { format!("   x{:.0}", info.time_scale) } else if info.history_mode && clock == "real clock" { "   (mount follows real time)".into() } else { String::new() });
     if info.column.is_some() {
         if info.have_data {
-            let vis = if info.el >= 0.0 { "above the horizon" } else { "below the horizon" };
-            s += &format!("NOW        bearing {:6.1}   el {:5.1}   range {:6.0} km   {:+.3} km/s   {}\n", info.bearing, info.el, info.range, info.range_rate, vis);
+            s += &format!("NOW        bearing {:.1}  el {:.1}  {:.0} km  {:+.3} km/s\n", info.bearing, info.el, info.range, info.range_rate);
             match info.downlink_hz {
-                Some(f) => s += &format!("DOWNLINK   {:.4} MHz {} {}   doppler {:+.2} kHz\n", f / 1e6, info.tx_mode, info.tx_desc, -info.range_rate / 299792.458 * f / 1e3),
+                Some(f) => s += &format!("DOWNLINK   {:.4} MHz {}   doppler {:+.2} kHz\n", f / 1e6, info.tx_mode, -info.range_rate / 299792.458 * f / 1e3),
                 None => s += "DOWNLINK   no frequency listed\n",
             }
         } else { s += &format!("NOW        {}\n", info.preview_note); }
-        match &info.preview {
+        //During a procedure show the pass being flown: the preview is recomputed every 20 s and, mid-pass,
+        //finds "a pass in progress" that starts now, with a path for only the rest of it
+        let flying = tracker.plan.as_ref().filter(|p| tracker.active() && Some(p.column) == info.column);
+        match flying.or(info.preview.as_ref()) {
             Some(p) => {
                 let until = (p.pass.aos_jd - info.real_jd) * 86400.0;
-                s += &format!("NEXT PASS  AOS {} ({})   LOS {}   max el {:.0} at {}   {:.1} min\n", jd_local(p.pass.aos_jd),
-                    if until > 0.0 { format!("in {}", crate::tracking::fmt_countdown(until)) } else { "in progress".into() },
-                    jd_local(p.pass.los_jd), p.pass.max_el, jd_local(p.pass.max_el_jd), (p.pass.los_jd - p.pass.aos_jd) * 1440.0);
+                let hm = |jd: f64| jd_local(jd).chars().take(5).collect::<String>();
+                s += &format!("PASS       AOS {} ({})  LOS {}\n", hm(p.pass.aos_jd),
+                    if until > 0.0 { format!("in {}", crate::tracking::fmt_countdown(until)) } else { "now".into() }, hm(p.pass.los_jd));
+                s += &format!("PEAK       el {:.0} at {}\n", p.pass.max_el, hm(p.pass.max_el_jd));
                 let (a0, a1) = p.path.points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), q| (lo.min(q.1), hi.max(q.1)));
-                s += &format!("MOUNT PATH {}{}   az {:.0}..{:.0} (bearing {:.0}..{:.0})   peak rate az {:.2} el {:.2} deg/s   margin {:.0}{}\n",
-                    p.path.flip.name(), if p.path.flips_mid > 0 { "+FLIP" } else { "" }, a0, a1, geom.bearing(a0), geom.bearing(a1), p.path.max_az_rate, p.path.max_el_rate, p.path.margin_deg,
+                s += &format!("PATH       az {:.0}..{:.0}  margin {:.0} deg{}\n",
+                    a0, a1, p.path.margin_deg,
                     if p.path.clipped { "   CLIPPED" } else { "" });
             }
-            None if info.have_data => s += &format!("NEXT PASS  {}\n", info.preview_note),
+            None if info.have_data => s += &format!("PASS       {}\n", info.preview_note),
             None => {}
         }
     }
-    if let Some((a, e)) = mount.fb {
-        let (b, el) = geom.sky_of(a, e);
-        let lock = match info.point_err_deg { Some(d) if d < 1.0 => format!("   LOCKED  error {d:.2} deg"), Some(d) => format!("   error {d:.1} deg"), None => String::new() };
-        s += &format!("DISH       bearing {:.1}   el {:.1}   (mount {:.1} / {:.1}){}{}\n", b, el, a, e, if mount.moving { "   moving" } else { "" }, lock);
-    }
-    s += &format!("\nPROCEDURE  {}   {}{}\n", tracker.phase.label(), tracker.message, if let Some((_, n)) = &tracker.target { if tracker.active() { format!("   [{n}]") } else { String::new() } } else { String::new() });
+    s += &format!("\nPROCEDURE  {}   {}   auto {}\n", tracker.phase.label(), tracker.message, if auto { "on" } else { "off" });
     for st in &tracker.steps { s += &format!("  {} {:<10} {}\n", st.mark(), st.label, st.detail); }
     if let Some((a, e)) = tracker.last_cmd { if tracker.active() { s += &format!("           last GO {:.2} {:.2}   {} commands\n", a, e, tracker.commands_sent); } }
-    s += &format!("\nA arm   I aim   W warp   Escape abort   AUTO {}", if auto { "on: a pick starts the procedure" } else { "off" });
+    s
+}
+fn motor_text(link: &SerialLink, mount: &MountState, motor: &Motor, geom: &MountGeom, tracker: &Tracker) -> String {
+    let mut s = String::new();
+    s += &format!("LINK       {}  tx {}  rx {}  telemetry {}\n", link.status, link.tx_count, link.rx_count, if mount.alive() { "OK" } else if link.is_open() { "STALE" } else { "-" });
+    if !link.last_error.is_empty() { s += &format!("ERROR      {}\n", link.last_error); }
+    s += &format!("FIRMWARE   {}\n", if mount.firmware.is_empty() { "-" } else { mount.firmware.as_str() });
+    //The firmware's K flag: whether it knows where the dish is. Unknown after a power-on: it refuses to move until ZERO
+    if let Some(p) = mount.pose { s += if p.known { "POSITION   known\n" } else { "POSITION   UNKNOWN: type ZERO az el in the console\n" }; }
+    match mount.cmd { Some((a, e)) => s += &format!("COMMANDED  az {:.2}  el {:.2}\n", a, e), None => s += "COMMANDED  -\n" }
+    match mount.fb {
+        //Not a measurement: no sensor reports where the dish is. This is the firmware's settle model, which is only
+        //right if the calibration is, and means nothing at all while the position is unknown (servos limp)
+        Some((a, e)) => {
+            let (b, el) = geom.sky_of(a, e);
+            let state = if mount.pose.map_or(false, |p| !p.known) { "LIMP, unknown" } else if mount.moving { "MOVING" } else { "holding" };
+            s += &format!("ESTIMATED  az {:.2}  el {:.2}  sky {:.1} / {:.1}  {}\n", a, e, b, el, state);
+        }
+        None => s += "ESTIMATED  -\n",
+    }
+    if let Some(enc) = mount.encoder { s += &format!("ENCODER    {enc:.0}\n"); }
+    s += &format!("LIMITS     az {:.0}..{:.0} of {:.0} travel   el {:.0}..{:.0}   zero bearing {:.1}{}\n",
+                  geom.az_lo, geom.az_hi, geom.az_travel, geom.el_min, geom.el_max, geom.az_zero(),
+                  if geom.el_corr != 0.0 { format!("   el corr {:+.2}", geom.el_corr) } else { String::new() });
+    s += &format!("STEP       {:.1} deg   {}\n", motor.step, if tracker.active() { "PROCEDURE (manual locked)" } else { "MANUAL" });
     s
 }
 
-fn motor_text(link: &SerialLink, mount: &MountState, motor: &Motor, geom: &MountGeom, cfg: &ControlConfig, tracker: &Tracker) -> String {
-    let mut s = String::new();
-    s += &format!("LINK       {}   tx {}   rx {}{}\n", link.status, link.tx_count, link.rx_count, if link.last_error.is_empty() { String::new() } else { format!("   last error: {}", link.last_error) });
-    s += &format!("FIRMWARE   {}   telemetry {}\n", if mount.firmware.is_empty() { "-" } else { mount.firmware.as_str() }, if mount.alive() { "OK" } else if link.is_open() { "STALE" } else { "-" });
-    match mount.cmd { Some((a, e)) => s += &format!("COMMANDED  az {:7.2}   el {:7.2}   -> bearing {:.1}\n", a, e, geom.bearing(a)), None => s += "COMMANDED  -\n" }
-    match mount.fb {
-        Some((a, e)) => { let (b, el) = geom.sky_of(a, e); s += &format!("MEASURED   az {:7.2}   el {:7.2}   -> bearing {:.1}  el {:.1}   {}\n", a, e, b, el, if mount.moving { "MOVING" } else { "holding" }); }
-        None => s += "MEASURED   -\n",
+/// Cut every line to the tile's width so nothing runs off the edge; a cut line ends in "…"
+/// Lines of the procedure checklist that must be read in full: a failed or warned step says what to do
+fn must_read(l: &str) -> bool { l.starts_with("  [X] ") || l.starts_with("  [!] ") }
+
+/// Cut every line to the tile's width so nothing runs off the edge; a cut line ends in "…". A failed or
+/// warned checklist step is wrapped instead, under its detail column, because its second half is usually
+/// the instruction (`... then type /here AZ EL in the SERIAL CONSOLE`).
+fn fit_lines(s: &str, cols: usize) -> String {
+    s.lines().map(|l| if l.chars().count() <= cols { l.to_string() }
+                      else if must_read(l) { wrap_line(l, cols, 17) }
+                      else { l.chars().take(cols.saturating_sub(1)).chain(std::iter::once('\u{2026}')).collect() })
+        .collect::<Vec<_>>().join("\n")
+}
+
+/// Break a line at spaces so no piece is wider than `cols`; continuation pieces are indented by `indent`.
+/// Runs of spaces (the checklist's column alignment) are kept; a word longer than a whole piece stays whole.
+fn wrap_line(l: &str, cols: usize, indent: usize) -> String {
+    let cols = cols.max(indent + 10);
+    let mut pieces: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut started = false;
+    for word in l.split(' ') {
+        let width = if pieces.is_empty() { cols } else { cols - indent };
+        if started && !word.is_empty() && cur.chars().count() + 1 + word.chars().count() > width {
+            pieces.push(std::mem::take(&mut cur));
+            started = false;
+        }
+        if started { cur.push(' '); }
+        cur.push_str(word);
+        started = true;
     }
-    if let Some(enc) = mount.encoder { s += &format!("ENCODER    {enc:.0}\n"); }
-    s += &format!("LIMITS     az 0..{:.0}   el {:.0}..{:.0}   zero bearing {:.1}   rate {:.0} / {:.0} deg/s\n", geom.az_travel, geom.el_min, geom.el_max, geom.az_zero(), cfg.mount.az_rate_dps, cfg.mount.el_rate_dps);
-    s += &format!("STEP       {:.1} deg   mode {}\n", motor.step, if tracker.active() { "PROCEDURE (manual locked)" } else { "MANUAL" });
-    s += "\narrows jog   [ ] step   S stop   P park   H home";
-    s
+    pieces.push(cur);
+    pieces.iter().enumerate().map(|(i, p)| if i == 0 { p.clone() } else { format!("{}{}", " ".repeat(indent), p.trim_start()) }).collect::<Vec<_>>().join("\n")
 }
 
 fn refresh_text(
@@ -799,16 +924,19 @@ fn refresh_text(
     mut input_line: Query<&mut Text, (With<ConsoleInputText>, Without<TileBody>, Without<TileTitle>)>,
 ) {
     let line_h = cfg.window.font_size * 1.2;
+    //Characters that fit across a tile (PrintChar21 is monospaced and wide: 0.875 em per character, measured)
+    let cols = |w: f32| ((w - 16.0) / (cfg.window.font_size * 0.875)).max(10.0) as usize;
     for (b, mut text) in &mut bodies {
         let Some(r) = layout.rects[b.0.idx()] else { continue };
         text.0 = match b.0 {
-            Tile::Live => live_text(&info, &tracker, &mount, &geom.0, auto.0),
-            Tile::Motor => motor_text(&link, &mount, &motor, &geom.0, &cfg, &tracker),
+            Tile::Live => fit_lines(&live_text(&info, &tracker, auto.0), cols(r.w)),
+            Tile::Motor => fit_lines(&motor_text(&link, &mount, &motor, &geom.0, &tracker), cols(r.w)),
             Tile::Mount | Tile::Globe => { let _ = view; String::new() }
             Tile::Console => {
                 let rows = (((r.h - (cfg.window.font_size + 8.0) - 12.0 - line_h * 2.0 - 30.0) / line_h).floor() as usize).max(1);
-                let v = console.view(rows);
-                let mut s = v.join("\n");
+                //Long notes (a failed check, an unwind) wrap instead of running off the tile; the newest rows win
+                let wrapped: Vec<String> = console.view(rows).iter().flat_map(|l| wrap_line(l, cols(r.w), 2).lines().map(str::to_string).collect::<Vec<_>>()).collect();
+                let mut s = wrapped[wrapped.len().saturating_sub(rows)..].join("\n");
                 if console.scroll > 0 { s += &format!("\n-- {} more below --", console.scroll); }
                 s
             }
@@ -817,8 +945,11 @@ fn refresh_text(
     for (t, mut text) in &mut titles {
         text.0 = match t.0 {
             Tile::Mount => match mount.fb {
-                Some((a, e)) => format!("3 MOUNT   az {:.1}  el {:.1}   {}{}", a, e, if mount.moving { "MOVING" } else { "" },
-                    match info.point_err_deg { Some(d) if d < 1.0 && tracker.phase == Phase::Tracking => format!("   LOCKED {d:.2} deg"), Some(d) if tracker.phase == Phase::Tracking => format!("   error {d:.1} deg"), _ => String::new() }),
+                //The error shown is the firmware's estimate against the satellite: it catches lag, a clipped or wrong
+                //plan, a slew still running. It cannot see calibration errors, so it never claims a lock.
+                Some(_) if mount.pose.map_or(false, |p| !p.known) => "3 MOUNT   POSITION UNKNOWN (ZERO az el)".into(),
+                Some((a, e)) => format!("3 MOUNT   az {:.1}  el {:.1} est.   {}{}", a, e, if mount.moving { "MOVING" } else { "" },
+                    match info.point_err_deg { Some(d) if tracker.phase == Phase::Tracking => format!("   model err {d:.2} deg"), _ => String::new() }),
                 None => "3 MOUNT   (no telemetry)".into(),
             },
             Tile::Console => format!("4 SERIAL CONSOLE   {}", link.port_name()),
@@ -876,10 +1007,10 @@ fn draw_overlays(
             for b in [0.0, 90.0, 180.0, 270.0] { gizmos.line_2d(to_world(polar(b, 0.0)), to_world(polar(b, if b == 0.0 { -12.0 } else { -6.0 })), pal.dim); }
             //Mount reach: the two azimuth limits as ticks outside the horizon ring, and (travel under a full
             //turn only) the bearings the axis cannot reach as a dim arc
-            for b in [geom.0.az_zero(), geom.0.az_zero() + geom.0.az_travel] { gizmos.line_2d(to_world(polar(b, -1.0)), to_world(polar(b, -9.0)), pal.warn.with_alpha(0.8)); }
-            let gap = 360.0 - geom.0.az_travel;
+            for b in [geom.0.az_zero() + geom.0.az_lo, geom.0.az_zero() + geom.0.az_hi] { gizmos.line_2d(to_world(polar(b, -1.0)), to_world(polar(b, -9.0)), pal.warn.with_alpha(0.8)); }
+            let gap = 360.0 - geom.0.az_span();
             if gap > 0.5 {
-                let start = geom.0.az_zero() + geom.0.az_travel;
+                let start = geom.0.az_zero() + geom.0.az_hi;
                 let n = 24;
                 for i in 0..n {
                     let b0 = start + gap * i as f64 / n as f64; let b1 = start + gap * (i + 1) as f64 / n as f64;
@@ -904,5 +1035,73 @@ fn draw_overlays(
     if let Some(r) = layout.rects[layout.focus.idx()].filter(|_| revealed(layout.focus)) {
         let y = r.y + title_h;
         gizmos.line_2d(to_world(Vec2::new(r.x + 1.0, y)), to_world(Vec2::new(r.x + r.w - 1.0, y)), pal.border_focus.with_alpha(0.8));
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    #[test]
+    fn failed_steps_wrap_and_everything_else_is_cut() {
+        let fail = "  [X] LINK       mount is uncalibrated: no sky tie. Point the dish at something whose direction you know, then type /here AZ EL";
+        let out = fit_lines(&format!("{fail}\nNOW        bearing 261.6  el -16.3  5639 km  -5.750 km/s"), 40);
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines[0].starts_with("  [X] LINK       mount"), "{out}");
+        assert!(lines.iter().all(|l| l.chars().count() <= 40), "{out}");
+        assert!(out.contains("/here AZ EL"), "the instruction must survive: {out}");
+        assert!(lines[1].starts_with(&" ".repeat(17)), "continuations sit under the detail column: {out}");
+        assert!(lines.last().unwrap().ends_with('\u{2026}'), "an ordinary long line is still cut: {out}");
+        //a line that fits is untouched, spacing and all
+        assert_eq!(wrap_line("  [!] SLEW       ok", 40, 17), "  [!] SLEW       ok");
+    }
+}
+
+#[cfg(test)]
+mod here_tests {
+    use super::*;
+    use crate::config::CalibrationCfg;
+
+    /// The console's /here, end to end: typed text in, the tie in use and saved, notes out
+    #[test]
+    fn here_and_here_clear_from_the_console() {
+        let dir = std::env::temp_dir().join(format!("perigee_here_console_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = ControlConfig { calibration: CalibrationCfg { file: dir.join("calibration.toml").to_string_lossy().into(), here: None }, ..Default::default() };
+        let mut geom = MountGeom::from_cfg(&cfg.mount);
+        let (mut console, mut link, mut tracker, mut auto) = (Console::default(), SerialLink::default(), Tracker::default(), AutoArm(false));
+        let mut mount = MountState::default();
+        let mut run = |cmd: &str, cfg: &mut ControlConfig, geom: &mut MountGeom, mount: &MountState, console: &mut Console| {
+            console.lines.clear();
+            local_command(cmd, console, &mut link, cfg, geom, &mut tracker, &mut auto, mount);
+            console.lines.iter().cloned().collect::<Vec<_>>().join("\n")
+        };
+        //No telemetry yet: nothing to tie to
+        let out = run("here 245 45", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("no T4 telemetry") && !cfg.mount.calibrated(), "{out}");
+        //After a power cycle the firmware does not know where the dish is: refuse
+        mount.ingest("T4 200.00 45.00 200.00 45.00 200.00 45.00 NA -1 -");
+        let out = run("here 245 45", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("ZERO az el first") && !cfg.mount.calibrated(), "{out}");
+        //Still moving: refuse
+        mount.ingest("T4 212.30 47.00 210.00 47.00 209.00 47.00 NA -1 KM");
+        let out = run("here 245 45", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("still moving") && !cfg.mount.calibrated(), "{out}");
+        //Settled on the reference: tied, and the geometry in use changes at once
+        mount.ingest("T4 212.30 47.00 212.30 47.00 212.30 47.00 NA -1 K");
+        let out = run("here 245 45", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("tied: mount 212.30 47.00 faces bearing 245.00 elevation 45.00"), "{out}");
+        assert!(out.contains("centre bearing 257.700 deg, elevation correction +2.00 deg"), "{out}");
+        assert_eq!((geom.az_center, geom.el_corr), (257.7, 2.0));
+        //Bad numbers: usage, nothing changes
+        let out = run("here east 45", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("usage: /here"), "{out}");
+        //Show
+        let out = run("here", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("sky bearing 245.00 elevation 45.00"), "{out}");
+        //Clear: uncalibrated, nominal geometry back in use
+        let out = run("here clear", &mut cfg, &mut geom, &mount, &mut console);
+        assert!(out.contains("sky tie cleared") && !cfg.mount.calibrated(), "{out}");
+        assert_eq!((geom.az_center, geom.el_corr), (crate::config::NOMINAL_AZ_CENTER_BEARING_DEG, 0.0));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

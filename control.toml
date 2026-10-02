@@ -1,7 +1,15 @@
-# Perigee Control settings. Every key is optional; anything missing falls back to a built-in default.
-# The orbit viewer keeps its own settings file (see [viewer]); this file covers the boot page, the tiles,
-# the mount, the serial link and how the engine is run. Relative paths are resolved from the folder you
+# Perigee Control settings. Every key is optional; anything missing falls back to a built-in default
+# (src/config.rs holds the defaults, and this file lists every key that is actually read). The orbit
+# viewer keeps its own settings file (see [viewer]); this file covers the boot page, the tiles, the
+# mount, the serial link and how the engine is run. Relative paths are resolved from the folder you
 # run perigee-control in (normally this one, a sibling of perigee-viewer and Perigee).
+#
+# Two things this file deliberately does NOT contain:
+#   * calibration numbers. The mount's tie to the sky (centre bearing, elevation correction) is set with
+#     /here or /bearing in the SERIAL CONSOLE (docs/calibration.md 6.7) and kept in the [calibration]
+#     file. See [mount].
+#   * a safety window wider than the firmware's. firmware/perigee_mount_stm32/src/limits.rs is the
+#     authority; anything here is narrowed into it on load. See [mount].
 
 [viewer]
 config = "../perigee-viewer/viewer.toml"   # the viewer's settings (look, station, regions, propagation)
@@ -39,13 +47,12 @@ bin = "../Perigee/target/release/perigee"   # when this is not built, `cargo run
 dir = "../Perigee"                          # the engine's crate; its .env holds the saved SPACETRACK_USER / SPACETRACK_PASS
 # Which orbits a full refresh pulls: "leo" (low passes), "geo" (the geostationary belt: GOES and its
 # neighbours, parked pointing rather than tracking) or "all" (both). [O] on the boot menu cycles it.
-orbits = "leo"
+orbits = "all"
 
 [boot]
 enabled = true        # false: no boot page, no login, straight to the tiles
-rain = true           # falling glyphs behind the boot log
-line_seconds = 0.09   # pause between lines as the log types itself out
-decode_seconds = 0.45 # how long a new line takes to settle from noise into text
+type_cps = 240.0      # teletype speed, characters per second (a backlog of engine output speeds it up)
+line_seconds = 0.03   # pause after each line
 font_size = 15.0      # the boot page's type
 
 [serial]
@@ -55,33 +62,91 @@ simulate = true       # no port (or none found): drive a built-in mount simulato
 reconnect_seconds = 3.0
 telemetry_hz = 5.0    # asked of the firmware with "TEL <hz>" after connecting
 
+#--------------------------------------------------------------------------------------------- mount
+# The mount frame: azimuth 0..az_travel_deg on the Stingray-4 gearbox, elevation el_min..el_max on the
+# Stingray-9. Azimuth is absolute and unwrapped (0 at one mechanical end, rising to 450 at the other),
+# so a move never takes a short cut through the cable wrap.
+#
+# THE SAFETY WINDOW IS THE FIRMWARE'S, NOT THIS FILE'S.
+# firmware/perigee_mount_stm32/src/limits.rs (AZ_CAL / EL_CAL) clamps every pulse it emits, and the
+# four limits below are mirrored from it: AZ 0..400, EL -2..91. On load the host narrows whatever is
+# here into that window and prints a note for anything it had to change, so editing this file can only
+# ever make the window tighter. Widening it here would just produce a host that plans moves the board
+# answers with "ERR ... clamped", which is how a pass gets silently clipped at the wrong angle.
+# To genuinely change a limit, edit limits.rs first (it is the authority), then match it here.
+#
+# Why these numbers:
+#   az 0..400   the cable service loop is 1.25 turns with no slip ring, so 50 deg of the gearbox's
+#               450 is kept unused. Beck's limit.
+#   el -2..91   the dish never tips more than a degree past vertical (no flip-over: a pass near the
+#               zenith is followed in azimuth and may lag briefly at the top). -2, not -5: with the
+#               firmware's EL offset of 5, mount elevation -5 puts the elevation gearbox hard against
+#               its 0 deg stop with a 9 kg dish on the arm. See EL_CAL in limits.rs.
 [mount]
-# Mount frame: azimuth 0..az_travel_deg on the Stingray-4, elevation el_min..el_max on the Stingray-9.
-# az_center_bearing_deg is the ONE calibration number: the true bearing the dish faces at mid travel
-# (az_travel/2). With 450 deg of travel the unreachable 270 deg gap is centred opposite this bearing.
-az_travel_deg         = 450.0
-az_center_bearing_deg = 217.5    # middle of the 120..315 DISH SECTOR; the gap sits due north
-el_min_deg            = -5.0
-el_max_deg            = 185.0    # > 90 lets the mount flip over for passes near the zenith
-az_rate_dps           = 20.0     # slew limits sent to the firmware (RATE) after connecting
-el_rate_dps           = 15.0
-park_az_deg           = 225.0    # mount-frame park pose (mid travel)
-park_el_deg           = 45.0
-home_el_deg           = 0.0      # HOME = mid azimuth travel at this elevation
+az_travel_deg   = 450.0   # hardware travel; defines the frame, NOT the usable range. Must equal AZ_CAL.gear_travel.
+az_limit_lo_deg = 0.0     # cable-wrap soft limits, mount frame. Mirror of AZ_CAL.limit_lo / limit_hi.
+az_limit_hi_deg = 400.0
+el_min_deg      = -2.0    # mirror of EL_CAL.limit_lo / limit_hi
+el_max_deg      = 91.0
+
+# az_center_bearing_deg: the true bearing the boresight faces at mid hardware travel (mount az 225).
+# el_correction_deg: how much higher the mount's elevation reads than the true elevation (0 until measured).
+# Together they tie the mount frame to the sky. Neither is set here.
+#
+# The quick way: point the dish at something whose direction you know (a far tower, the sun with the
+# dish face covered, a geostationary satellite) and type /here AZ EL in the SERIAL CONSOLE, the true
+# bearing and elevation it is pointing at. That works out both numbers from where the firmware says the
+# dish is, writes them to the [calibration] file below and uses them at once. A second /here far round in
+# azimuth also checks the azimuth motor's scale. /here alone shows the tie; /here clear forgets it.
+# Or measure the bearing with docs/calibration.md §6.7 (sun shadow or a distant landmark) and type
+# /bearing <deg>. While no tie is saved the mount is uncalibrated: the frame falls back to a nominal
+# 217.5 (design intent, middle of the 120..315 dish sector) so the MOUNT wireframe still draws and the
+# simulator still runs a full pass, but the LINK check REFUSES to track on a real serial link, because
+# every az/el the tracker computes comes from this bearing and a guess points the dish confidently at
+# the wrong patch of sky. /here clear (or deleting the calibration file) forces a recalibration.
+#
+# /bearing with no number shows the value in use. Writing the keys into the calibration file by hand
+# does the same as the commands, but only from the next start.
+
+az_rate_dps = 20.0        # slew limits sent to the firmware with RATE after connecting; it accepts 0.1..90
+el_rate_dps = 15.0
+
+# Park and home poses, mount frame. park_az/el must agree with the firmware's PARK, because the PARK
+# button sends the firmware's own PARK command and the dish goes wherever the firmware says: main.rs
+# has PARK = [200.0, 45.0], mid *window* (0..400), so that is what these are. (They used to read
+# 225/45, mid *travel*, which is a different pose under the same name: the host would show one park
+# position and the mount would drive to another. docs/calibration.md §5.1.) The host only uses these
+# itself as the jog origin when telemetry has not arrived yet.
+park_az_deg = 200.0
+park_el_deg = 45.0
+home_el_deg = 0.0         # HOME = mid azimuth travel at this elevation
+
+[calibration]
+# Where the sky tie is kept. Written by perigee-control's /here and /bearing commands, not by hand;
+# /here clear (or deleting the file) puts the mount back to uncalibrated. Any value in it overrides
+# [mount], so a measurement always outranks a typed guess. The keys it can hold:
+#   az_center_bearing_deg = <true bearing at mid travel, deg>
+#   el_correction_deg     = <mount elevation minus true elevation, deg>
+#   here_mount_az_deg, here_bearing_deg = <where the last /here was taken; the next /here checks the motor scale against it>
+file = "calibration.toml"
 
 [tracking]
 sample_seconds   = 2.0    # spacing of the az/el samples the pass is solved on
 command_hz       = 4.0    # how often GO az el is sent while tracking (in clock seconds)
-lead_seconds     = 0.4    # aim this far ahead of real time to cover servo lag
+lead_seconds     = 0.4    # aim this far ahead of real time to cover servo lag (a fixed guess; nothing measures the real lag)
 lookahead_hours  = 24.0   # how far ahead to look for the next pass of the picked satellite
 mask_deg         = 0.0    # elevation floor for AOS/LOS; 0 = the viewer's elevation_mask_deg
 park_after       = true   # send PARK when the pass ends
 # The procedure. Picking a satellite in ORBIT VIEW starts it by itself (auto_arm): TARGET, LINK, EPHEMERIS,
 # PASS, PATH checks one after another, then SLEW to the AOS point, ARMED until AOS, TRACKING, PARK. A new pick
 # restarts it for the new satellite; clearing the pick (Escape on the globe) aborts and parks.
+# The LINK check is also the calibration gate: an uncalibrated real mount fails it here, before anything moves.
 auto_arm         = true
 step_seconds     = 0.7    # pause between the checks so the list can be read as it fills in
-on_point_deg     = 0.5    # measured vs commanded agreement that counts as "on point"
+# on_point_deg: how close the T4 settled estimate must be to the firmware's target, and that target to the
+# last GO, for "on point" at the end of the SLEW step (also: K set, M and A/E clear). The settled estimate is
+# the ramped pulse lagged by a conservative servo model, not a measurement: no encoder is fitted.
+on_point_deg     = 0.5
 # Simulation. With the built-in mount simulator (no serial port) the dish follows the viewer's clock, so
 # HISTORY mode's speed and pause apply to the mount too, and the procedure warps the viewer's clock to
 # warp_lead_s before AOS at warp_speed so the pass plays out on screen right away, then returns to LIVE.
