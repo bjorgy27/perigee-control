@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1080" width="1560" height="1080" font-family="ui-monospace, 'DejaVu Sans Mono', monospace">
+  <title>PERIGEE mount wiring: Nucleo-F401RE, two goBILDA Stingray servo gearboxes, open loop</title>
+  <desc>Azimuth Stingray-4 signal on PC7 (TIM3 CH2, header D9), elevation Stingray-9 signal on PB6
+  (TIM4 CH1, header D10), USART2 PA2/PA3 to the PC over the ST-LINK. No encoder on either axis;
+  PA0/PA1 and PB8/PB9 are left unconnected. Servo power is a separate 7.4 V 10 A rail with a
+  common ground to the board.</desc>
+
+  <defs>
+    <marker id="a-sig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f2f2f2"/>
+    </marker>
+    <marker id="a-pwr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#ff5b4a"/>
+    </marker>
+    <marker id="a-dat" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9cffb8"/>
+    </marker>
+    <style>
+      .bg   { fill: #0b0f0c; }
+      .box  { fill: #11170f; stroke: #3beb6b; stroke-width: 2; }
+      .boxd { fill: #11170f; stroke: #4a5847; stroke-width: 2; stroke-dasharray: 7 5; }
+      .brd  { fill: #141b16; stroke: #9cffb8; stroke-width: 2.5; }
+      .t    { fill: #d9f5e2; font-size: 15px; }
+      .tt   { fill: #9cffb8; font-size: 16px; font-weight: bold; letter-spacing: 1px; }
+      .ts   { fill: #8fa796; font-size: 13px; }
+      .tp   { fill: #ffe9a8; font-size: 14px; font-weight: bold; }
+      .pwr  { stroke: #ff5b4a; stroke-width: 3.5; fill: none; }
+      .gnd  { stroke: #8a8f94; stroke-width: 3.5; fill: none; }
+      .sig  { stroke: #f2f2f2; stroke-width: 3; fill: none; }
+      .dat  { stroke: #9cffb8; stroke-width: 2.5; fill: none; }
+      .pad  { fill: #0b0f0c; stroke: #ffe9a8; stroke-width: 2; }
+      .warn { fill: #ff8a6b; font-size: 13px; }
+      .lbl  { fill: #6f8375; font-size: 12px; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1560" height="1080"/>
+
+  <text class="tt" x="34" y="44" font-size="24">PERIGEE MOUNT // WIRING</text>
+  <text class="ts" x="34" y="70">Nucleo-F401RE (STM32F401RET6) driving goBILDA Stingray-4 (AZ) and Stingray-9 (EL) servo gearboxes.</text>
+  <text class="ts" x="34" y="90">Every pin below is read out of firmware/perigee_mount_stm32/src/hw.rs. The firmware is the source of truth.</text>
+
+  <!-- ============================================================ legend -->
+  <g transform="translate(1030,24)">
+    <rect class="boxd" x="0" y="0" width="470" height="92" rx="4"/>
+    <text class="ts" x="14" y="22">WIRE KEY</text>
+    <line class="pwr" x1="16" y1="44" x2="54" y2="44"/>
+    <text class="t"   x="64" y="49">+7.4 V servo rail</text>
+    <line class="gnd" x1="254" y1="44" x2="292" y2="44"/>
+    <text class="t"   x="302" y="49">common ground</text>
+    <line class="sig" x1="16" y1="70" x2="54" y2="70"/>
+    <text class="t"   x="64" y="75">servo signal 3.3 V</text>
+    <line class="dat" x1="254" y1="70" x2="292" y2="70"/>
+    <text class="t"   x="302" y="75">USB serial to PC</text>
+  </g>
+
+  <!-- ============================================================ column A: power -->
+  <g>
+    <rect class="box" x="34" y="150" width="266" height="96" rx="4"/>
+    <text class="tt" x="50" y="180">12 V DC BRICK</text>
+    <text class="t"  x="50" y="204">12 V, 10 A minimum</text>
+    <text class="ts" x="50" y="228">120 W; sized by the servo rail</text>
+  </g>
+  <line class="pwr" x1="167" y1="246" x2="167" y2="286" marker-end="url(#a-pwr)"/>
+
+  <g>
+    <rect class="box" x="34" y="286" width="266" height="190" rx="4"/>
+    <text class="tt" x="50" y="316">BUCK / BEC</text>
+    <text class="t"  x="50" y="342">12 V in  -&gt;  7.4 V out</text>
+    <text class="t"  x="50" y="364">10 A continuous</text>
+    <text class="ts" x="50" y="388">2 x 3.0 A stall, x 1.7 for</text>
+    <text class="ts" x="50" y="406">reversal surge. 8 A floor.</text>
+    <text class="ts" x="50" y="424">goBILDA 3119-2829-0030.</text>
+    <text class="ts" x="50" y="450">Optional fuse: 5 A per</text>
+    <text class="ts" x="50" y="468">channel, 22 AWG leads.</text>
+  </g>
+
+  <!-- buck -> servo rail, round the bottom -->
+  <path class="pwr" d="M 167 476 L 167 1008 L 1496 1008" marker-end="url(#a-pwr)"/>
+  <text class="lbl" x="180" y="996">7.4 V to the rail</text>
+  <!-- rail negative -->
+  <path class="gnd" d="M 250 476 L 250 1046"/>
+
+  <!-- 12 V to the board, kept off the servo rail -->
+  <path class="pwr" d="M 300 190 L 360 190 L 360 627 L 418 627" marker-end="url(#a-pwr)"/>
+  <text class="lbl" x="302" y="178">12 V to VIN</text>
+
+  <!-- ============================================================ the board -->
+  <g>
+    <rect class="brd" x="400" y="150" width="430" height="640" rx="6"/>
+    <text class="tt" x="418" y="184" font-size="18">NUCLEO-F401RE</text>
+    <text class="ts" x="418" y="206">STM32F401RET6, Cortex-M4F. HSI 16 MHz,</text>
+    <text class="ts" x="418" y="224">untouched, so every bus runs at 16 MHz.</text>
+    <line x1="418" y1="238" x2="812" y2="238" stroke="#2c3a2f" stroke-width="1.5"/>
+
+    <!-- free pins -->
+    <rect class="boxd" x="418" y="256" width="394" height="78" rx="4"/>
+    <text class="warn" x="430" y="278">PB8 [D15] and PB9 [D14]: FREE.</text>
+    <text class="ts"   x="430" y="298">No encoder on either axis. The firmware leaves</text>
+    <text class="ts"   x="430" y="316">these pins and I2C1 unconfigured.</text>
+
+    <!-- outgoing pads, right side -->
+    <rect class="pad" x="694" y="406" width="118" height="32" rx="3"/>
+    <text class="tp" x="704" y="428">PC7  [D9]</text>
+    <text class="ts" x="418" y="420">AZ servo signal</text>
+    <text class="ts" x="418" y="438">TIM3 CH2, 50 Hz hardware PWM</text>
+
+    <rect class="pad" x="694" y="460" width="118" height="32" rx="3"/>
+    <text class="tp" x="704" y="482">PB6 [D10]</text>
+    <text class="ts" x="418" y="474">EL servo signal</text>
+    <text class="ts" x="418" y="492">TIM4 CH1, 50 Hz hardware PWM</text>
+
+    <!-- not connected -->
+    <rect class="boxd" x="418" y="516" width="394" height="78" rx="4"/>
+    <text class="warn" x="430" y="538">PA0 [A0] and PA1 [A1]: NOT CONNECTED.</text>
+    <text class="ts"   x="430" y="558">A 3-pin TJC8 connector (signal, V+, GND) and an</text>
+    <text class="ts"   x="430" y="576">internal pot: there is no feedback wire to read.</text>
+
+    <!-- supply / link pads, bottom left -->
+    <rect class="pad" x="418" y="610" width="140" height="34" rx="3"/>
+    <text class="tp" x="428" y="633">VIN 7-12 V</text>
+    <text class="ts" x="572" y="624">board supply from the same 12 V brick,</text>
+    <text class="ts" x="572" y="641">or USB VBUS while a PC is tethered</text>
+
+    <rect class="pad" x="418" y="660" width="200" height="34" rx="3"/>
+    <text class="tp" x="428" y="683">ST-LINK micro-USB</text>
+    <text class="ts" x="632" y="682">USART2 PA2 / PA3</text>
+
+    <rect class="pad" x="418" y="710" width="100" height="34" rx="3"/>
+    <text class="tp" x="428" y="733">GND</text>
+    <text class="ts" x="532" y="732">to the star point</text>
+
+    <text class="ts" x="532" y="762">PA5 [D13] = LD2: slow blink limp,</text>
+    <text class="ts" x="532" y="780">fast slewing, steady holding.</text>
+  </g>
+
+  <!-- board ground to the bus -->
+  <path class="gnd" d="M 418 727 L 340 727 L 340 1046"/>
+  <!-- USB down to the PC -->
+  <path class="dat" d="M 518 694 L 518 830" marker-end="url(#a-dat)"/>
+
+  <g>
+    <rect class="box" x="400" y="830" width="430" height="120" rx="4"/>
+    <text class="tt" x="418" y="862">GROUND STATION PC</text>
+    <text class="t"  x="418" y="888">perigee-control, termios serial</text>
+    <text class="t"  x="418" y="910">/dev/ttyACM0, 115200 8N1</text>
+    <text class="ts" x="418" y="934">plans the cable wrap; the firmware enforces it</text>
+  </g>
+
+  <!-- ============================================================ signals out -->
+  <path class="sig" d="M 812 422 L 944 422 L 944 500 L 1030 500" marker-end="url(#a-sig)"/>
+  <text class="lbl" x="952" y="494">white</text>
+  <path class="sig" d="M 812 476 L 900 476 L 900 700 L 1030 700" marker-end="url(#a-sig)"/>
+  <text class="lbl" x="908" y="694">white</text>
+
+  <!-- common ground trunk down the device column -->
+  <path class="gnd" d="M 1030 548 L 1000 548 L 1000 1046"/>
+  <path class="gnd" d="M 1030 748 L 1000 748"/>
+  <text class="lbl" x="994" y="640" text-anchor="end">black</text>
+
+  <!-- ============================================================ devices -->
+  <g>
+    <rect class="boxd" x="1030" y="200" width="430" height="200" rx="4"/>
+    <text class="tt" x="1048" y="232">OPEN LOOP // NO ENCODERS</text>
+    <text class="t"  x="1048" y="258">Both gearboxes are positional servos:</text>
+    <text class="t"  x="1048" y="282">the pulse width IS the position.</text>
+    <text class="ts" x="1048" y="306">The 5 kOhm pot is inside the servo and closes</text>
+    <text class="ts" x="1048" y="324">its own loop; nothing comes back on the wire.</text>
+    <text class="ts" x="1048" y="348">The firmware's position is the slew-limited</text>
+    <text class="ts" x="1048" y="366">command. A stalled or unpowered axis cannot</text>
+    <text class="ts" x="1048" y="384">be detected.</text>
+  </g>
+
+  <g>
+    <rect class="box" x="1030" y="450" width="430" height="172" rx="4"/>
+    <text class="tt" x="1048" y="480">AZIMUTH // STINGRAY-4</text>
+    <text class="ts" x="1048" y="502">3215-0001-0004, 4:1, 450 deg travel</text>
+    <text class="t"  x="1048" y="526">3-pin TJC8  |  500-2500 us @ 50 Hz</text>
+    <text class="t"  x="1048" y="548">0.225 deg/us (endpoint calibration)</text>
+    <text class="tp" x="1048" y="572">SOFT LIMIT 0..400 deg  (cable wrap)</text>
+    <text class="ts" x="1048" y="594">509..2287 us. 1.25-turn loop, no slip ring.</text>
+    <text class="ts" x="1048" y="612">Stall 3.0 A at 7.4 V.</text>
+  </g>
+
+  <g>
+    <rect class="box" x="1030" y="650" width="430" height="176" rx="4"/>
+    <text class="tt" x="1048" y="680">ELEVATION // STINGRAY-9</text>
+    <text class="ts" x="1048" y="702">3215-0001-0009, 9:1, 200 deg travel</text>
+    <text class="t"  x="1048" y="726">3-pin TJC8  |  500-2500 us @ 50 Hz</text>
+    <text class="t"  x="1048" y="748">0.100 deg/us (matches the published figure)</text>
+    <text class="tp" x="1048" y="772">SOFT LIMIT -2..185 deg  (build offset 5)</text>
+    <text class="ts" x="1048" y="794">530..2400 us. Open loop, no encoder.</text>
+    <text class="ts" x="1048" y="812">Stall 3.0 A at 7.4 V.</text>
+  </g>
+
+  <!-- ============================================================ servo rail -->
+  <rect x="1488" y="420" width="16" height="600" fill="#ff5b4a" rx="3"/>
+  <text class="tp" x="1540" y="720" transform="rotate(-90 1540 720)" text-anchor="middle">+7.4 V SERVO RAIL  10 A</text>
+  <path class="pwr" d="M 1460 500 L 1488 500" marker-start="url(#a-pwr)"/>
+  <path class="pwr" d="M 1460 700 L 1488 700" marker-start="url(#a-pwr)"/>
+
+  <!-- ============================================================ ground bus -->
+  <rect x="120" y="1046" width="1390" height="16" fill="#8a8f94" rx="3"/>
+  <text class="tp" x="124" y="1038" fill="#d6dade">COMMON GROUND  //  one star point: rail negative, Nucleo GND, both servo blacks</text>
+
+  <!-- ============================================================ cautions -->
+  <g>
+    <rect class="boxd" x="1030" y="850" width="430" height="146" rx="4"/>
+    <text class="ts"   x="1044" y="872">WHAT NOT TO DO</text>
+    <text class="warn" x="1044" y="896">Never run servo current through the Nucleo.</text>
+    <text class="ts"   x="1044" y="914">Its regulator cannot pass amps; routing the servo</text>
+    <text class="ts"   x="1044" y="932">supply through the board resets or destroys it.</text>
+    <text class="warn" x="1044" y="956">Never daisy-chain the two servos' power.</text>
+    <text class="ts"   x="1044" y="974">Each gets its own red and black pair to the rail.</text>
+    <text class="ts"   x="1044" y="990">3.3 V signal is in spec: pulse amplitude is 3-5 V.</text>
+  </g>
+</svg>

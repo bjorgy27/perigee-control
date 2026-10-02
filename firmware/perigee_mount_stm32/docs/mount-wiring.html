@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PERIGEE mount &mdash; wiring, limits and cable wrap</title>
+<style>
+  :root {
+    --ink: #1c2320;
+    --ink-soft: #55615b;
+    --ink-faint: #7d8a84;
+    --line: #d8ded9;
+    --line-soft: #eaeee9;
+    --paper: #ffffff;
+    --wash: #f6f8f6;
+    --accent: #1d6b3f;
+    --accent-wash: #eef6f0;
+    --warn: #9a3412;
+    --warn-wash: #fdf3ec;
+    --mono: ui-monospace, "SF Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--wash);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  main {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 40px 32px 80px;
+    background: var(--paper);
+  }
+
+  /* ---------------------------------------------------------------- masthead */
+  header.masthead { border-bottom: 3px solid var(--ink); padding-bottom: 20px; margin-bottom: 8px; }
+  .kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 10px;
+  }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .standfirst { font-size: 17px; color: var(--ink-soft); margin: 0; max-width: 72ch; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 28px;
+    margin: 18px 0 0;
+    padding: 0;
+    list-style: none;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-faint);
+  }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  /* ---------------------------------------------------------------- sections */
+  section { margin-top: 44px; }
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+  h2 + .sub { margin: 0 0 18px; font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
+  h3 { font-size: 15px; margin: 28px 0 8px; letter-spacing: 0.01em; }
+  p { margin: 0 0 12px; max-width: 82ch; }
+  ul, ol { max-width: 82ch; padding-left: 22px; margin: 0 0 12px; }
+  li { margin-bottom: 7px; }
+  code, .mono { font-family: var(--mono); font-size: 0.9em; }
+  code { background: var(--wash); border: 1px solid var(--line-soft); border-radius: 3px; padding: 1px 5px; }
+  a { color: var(--accent); }
+
+  /* ---------------------------------------------------------------- diagram */
+  figure.diagram { margin: 0; }
+  figure.diagram .frame {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #0b0f0c;
+    padding: 10px;
+    overflow: hidden;
+  }
+  figure.diagram svg { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 13.5px; color: var(--ink-faint); margin-top: 10px; max-width: 82ch; }
+
+  /* ---------------------------------------------------------------- tables */
+  table { width: 100%; border-collapse: collapse; margin: 0 0 14px; font-size: 14.5px; }
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-bottom: 7px;
+  }
+  th, td { text-align: left; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    border-bottom: 2px solid var(--ink);
+    font-size: 12px;
+    font-family: var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 1px solid var(--line); }
+  td.pin, td.num { font-family: var(--mono); white-space: nowrap; }
+  td.pin { font-weight: 600; }
+  tr.dim td { color: var(--ink-faint); }
+  tr.dim td.pin { text-decoration: line-through; font-weight: 400; }
+  .nc { color: var(--warn); font-weight: 600; text-decoration: none; display: inline-block; }
+
+  /* ---------------------------------------------------------------- callouts */
+  .rules { list-style: none; padding: 0; margin: 0; counter-reset: rule; }
+  .rules > li {
+    counter-increment: rule;
+    position: relative;
+    padding: 0 0 0 46px;
+    margin-bottom: 16px;
+  }
+  .rules > li::before {
+    content: counter(rule);
+    position: absolute;
+    left: 0; top: 1px;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--accent-wash);
+    color: var(--accent);
+    border: 1px solid #c4ddcd;
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .rules strong { display: block; }
+
+  .note, .warnbox {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-wash);
+    padding: 14px 18px;
+    margin: 18px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .note p:last-child, .warnbox p:last-child, .warnbox ul:last-child { margin-bottom: 0; }
+  .warnbox { border-left-color: var(--warn); background: var(--warn-wash); }
+  .note .tag, .warnbox .tag {
+    display: block;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+    color: var(--accent);
+  }
+  .warnbox .tag { color: var(--warn); }
+
+  .worked {
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 16px 20px;
+    margin: 18px 0;
+    background: var(--wash);
+  }
+  .worked ol { margin-bottom: 0; }
+  .worked h3 { margin-top: 0; }
+
+  /* ---------------------------------------------------------------- cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin: 18px 0; }
+  .card { border: 1px solid var(--line); border-radius: 5px; padding: 16px 18px; }
+  .card .label {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    display: block;
+    margin-bottom: 8px;
+  }
+  .card .big { font-size: 26px; font-family: var(--mono); font-weight: 600; letter-spacing: -0.02em; }
+  .card .foot { font-size: 13.5px; color: var(--ink-soft); margin-top: 6px; }
+  .card.ok { border-left: 3px solid var(--accent); }
+
+  /* ---------------------------------------------------------------- protocol */
+  pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    background: var(--wash);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 14px;
+  }
+
+  /* ---------------------------------------------------------------- checklist */
+  ol.check { list-style: none; counter-reset: ck; padding: 0; }
+  ol.check > li {
+    counter-increment: ck;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 14px 18px 14px 54px;
+    margin-bottom: 12px;
+    position: relative;
+  }
+  ol.check > li::before {
+    content: counter(ck);
+    position: absolute;
+    left: 16px; top: 13px;
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink-faint);
+  }
+  ol.check > li > strong:first-child { display: block; margin-bottom: 3px; }
+  ol.check p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--ink-faint);
+    font-family: var(--mono);
+  }
+
+  /* ---------------------------------------------------------------- print */
+  @media print {
+    body { background: #fff; font-size: 10.5pt; }
+    main { max-width: none; padding: 0; }
+    section { margin-top: 24px; page-break-inside: avoid; }
+    figure.diagram { page-break-inside: avoid; }
+    figure.diagram .frame { padding: 0; border-color: #999; }
+    table, .worked, .card, ol.check > li, pre { page-break-inside: avoid; }
+    .note, .warnbox { border-left-width: 3px; }
+    a { color: inherit; text-decoration: none; }
+    h1 { font-size: 22pt; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="masthead">
+  <p class="kicker">Perigee &middot; ground station &middot; firmware fw4-stm32</p>
+  <h1>Mount wiring, axis limits and cable-wrap safety</h1>
+  <p class="standfirst">A Nucleo-F401RE driving two goBILDA Stingray servo gearboxes, both open loop: no
+  encoder on either axis, and the pulse width is the position. Every pin, pulse and limit on this page
+  was read back out of
+  <code>src/hw.rs</code>, <code>src/limits.rs</code>, <code>src/main.rs</code> and
+  <code>control.toml</code> rather than from notes &mdash; the firmware is the source of truth.</p>
+  <ul class="meta">
+    <li><b>Board</b> Nucleo-F401RE / STM32F401RET6</li>
+    <li><b>Firmware ID</b> PERIGEE-MOUNT fw4-stm32, PROTO T4</li>
+    <li><b>Link</b> /dev/ttyACM0, 115200 8N1</li>
+    <li><b>Verified</b> 2026-10-01</li>
+  </ul>
+</header>
+
+<!-- ================================================================= diagram -->
+<section>
+  <h2>Figure 1</h2>
+  <p class="sub">The whole harness</p>
+  <figure class="diagram">
+    <div class="frame">
+      <svg id="wiring" role="img" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1080" font-family="ui-monospace, 'DejaVu Sans Mono', monospace">
+        <title>PERIGEE mount wiring: Nucleo-F401RE, two goBILDA Stingray servo gearboxes, open loop</title>
+        <desc>Azimuth Stingray-4 signal on PC7 (TIM3 CH2, header D9), elevation Stingray-9 signal on PB6
+        (TIM4 CH1, header D10), USART2 PA2/PA3 to the PC over the ST-LINK. No encoder on either axis;
+        PA0/PA1 and PB8/PB9 are left unconnected. Servo power is a separate 7.4 V 10 A rail with a
+        common ground to the board.</desc>
+
+        <defs>
+          <marker id="a-sig" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#f2f2f2"/>
+          </marker>
+          <marker id="a-pwr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#ff5b4a"/>
+          </marker>
+          <marker id="a-dat" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#9cffb8"/>
+          </marker>
+          <style>
+            #wiring .bg   { fill: #0b0f0c; }
+            #wiring .box  { fill: #11170f; stroke: #3beb6b; stroke-width: 2; }
+            #wiring .boxd { fill: #11170f; stroke: #4a5847; stroke-width: 2; stroke-dasharray: 7 5; }
+            #wiring .brd  { fill: #141b16; stroke: #9cffb8; stroke-width: 2.5; }
+            #wiring .t    { fill: #d9f5e2; font-size: 15px; }
+            #wiring .tt   { fill: #9cffb8; font-size: 16px; font-weight: bold; letter-spacing: 1px; }
+            #wiring .ts   { fill: #8fa796; font-size: 13px; }
+            #wiring .tp   { fill: #ffe9a8; font-size: 14px; font-weight: bold; }
+            #wiring .pwr  { stroke: #ff5b4a; stroke-width: 3.5; fill: none; }
+            #wiring .gnd  { stroke: #8a8f94; stroke-width: 3.5; fill: none; }
+            #wiring .sig  { stroke: #f2f2f2; stroke-width: 3; fill: none; }
+            #wiring .dat  { stroke: #9cffb8; stroke-width: 2.5; fill: none; }
+            #wiring .pad  { fill: #0b0f0c; stroke: #ffe9a8; stroke-width: 2; }
+            #wiring .warn { fill: #ff8a6b; font-size: 13px; }
+            #wiring .lbl  { fill: #6f8375; font-size: 12px; }
+          </style>
+        </defs>
+
+        <rect class="bg" x="0" y="0" width="1560" height="1080"/>
+
+        <text class="tt" x="34" y="44" font-size="24">PERIGEE MOUNT // WIRING</text>
+        <text class="ts" x="34" y="70">Nucleo-F401RE (STM32F401RET6) driving goBILDA Stingray-4 (AZ) and Stingray-9 (EL) servo gearboxes.</text>
+        <text class="ts" x="34" y="90">Every pin below is read out of firmware/perigee_mount_stm32/src/hw.rs. The firmware is the source of truth.</text>
+
+        <!-- ============================================================ legend -->
+        <g transform="translate(1030,24)">
+          <rect class="boxd" x="0" y="0" width="470" height="92" rx="4"/>
+          <text class="ts" x="14" y="22">WIRE KEY</text>
+          <line class="pwr" x1="16" y1="44" x2="54" y2="44"/>
+          <text class="t"   x="64" y="49">+7.4 V servo rail</text>
+          <line class="gnd" x1="254" y1="44" x2="292" y2="44"/>
+          <text class="t"   x="302" y="49">common ground</text>
+          <line class="sig" x1="16" y1="70" x2="54" y2="70"/>
+          <text class="t"   x="64" y="75">servo signal 3.3 V</text>
+          <line class="dat" x1="254" y1="70" x2="292" y2="70"/>
+          <text class="t"   x="302" y="75">USB serial to PC</text>
+        </g>
+
+        <!-- ============================================================ column A: power -->
+        <g>
+          <rect class="box" x="34" y="150" width="266" height="96" rx="4"/>
+          <text class="tt" x="50" y="180">12 V DC BRICK</text>
+          <text class="t"  x="50" y="204">12 V, 10 A minimum</text>
+          <text class="ts" x="50" y="228">120 W; sized by the servo rail</text>
+        </g>
+        <line class="pwr" x1="167" y1="246" x2="167" y2="286" marker-end="url(#a-pwr)"/>
+
+        <g>
+          <rect class="box" x="34" y="286" width="266" height="190" rx="4"/>
+          <text class="tt" x="50" y="316">BUCK / BEC</text>
+          <text class="t"  x="50" y="342">12 V in  -&gt;  7.4 V out</text>
+          <text class="t"  x="50" y="364">10 A continuous</text>
+          <text class="ts" x="50" y="388">2 x 3.0 A stall, x 1.7 for</text>
+          <text class="ts" x="50" y="406">reversal surge. 8 A floor.</text>
+          <text class="ts" x="50" y="424">goBILDA 3119-2829-0030.</text>
+          <text class="ts" x="50" y="450">Optional fuse: 5 A per</text>
+          <text class="ts" x="50" y="468">channel, 22 AWG leads.</text>
+        </g>
+
+        <!-- buck -> servo rail, round the bottom -->
+        <path class="pwr" d="M 167 476 L 167 1008 L 1496 1008" marker-end="url(#a-pwr)"/>
+        <text class="lbl" x="180" y="996">7.4 V to the rail</text>
+        <!-- rail negative -->
+        <path class="gnd" d="M 250 476 L 250 1046"/>
+
+        <!-- 12 V to the board, kept off the servo rail -->
+        <path class="pwr" d="M 300 190 L 360 190 L 360 627 L 418 627" marker-end="url(#a-pwr)"/>
+        <text class="lbl" x="302" y="178">12 V to VIN</text>
+
+        <!-- ============================================================ the board -->
+        <g>
+          <rect class="brd" x="400" y="150" width="430" height="640" rx="6"/>
+          <text class="tt" x="418" y="184" font-size="18">NUCLEO-F401RE</text>
+          <text class="ts" x="418" y="206">STM32F401RET6, Cortex-M4F. HSI 16 MHz,</text>
+          <text class="ts" x="418" y="224">untouched, so every bus runs at 16 MHz.</text>
+          <line x1="418" y1="238" x2="812" y2="238" stroke="#2c3a2f" stroke-width="1.5"/>
+
+          <!-- free pins -->
+          <rect class="boxd" x="418" y="256" width="394" height="78" rx="4"/>
+          <text class="warn" x="430" y="278">PB8 [D15] and PB9 [D14]: FREE.</text>
+          <text class="ts"   x="430" y="298">No encoder on either axis. The firmware leaves</text>
+          <text class="ts"   x="430" y="316">these pins and I2C1 unconfigured.</text>
+
+          <!-- outgoing pads, right side -->
+          <rect class="pad" x="694" y="406" width="118" height="32" rx="3"/>
+          <text class="tp" x="704" y="428">PC7  [D9]</text>
+          <text class="ts" x="418" y="420">AZ servo signal</text>
+          <text class="ts" x="418" y="438">TIM3 CH2, 50 Hz hardware PWM</text>
+
+          <rect class="pad" x="694" y="460" width="118" height="32" rx="3"/>
+          <text class="tp" x="704" y="482">PB6 [D10]</text>
+          <text class="ts" x="418" y="474">EL servo signal</text>
+          <text class="ts" x="418" y="492">TIM4 CH1, 50 Hz hardware PWM</text>
+
+          <!-- not connected -->
+          <rect class="boxd" x="418" y="516" width="394" height="78" rx="4"/>
+          <text class="warn" x="430" y="538">PA0 [A0] and PA1 [A1]: NOT CONNECTED.</text>
+          <text class="ts"   x="430" y="558">A 3-pin TJC8 connector (signal, V+, GND) and an</text>
+          <text class="ts"   x="430" y="576">internal pot: there is no feedback wire to read.</text>
+
+          <!-- supply / link pads, bottom left -->
+          <rect class="pad" x="418" y="610" width="140" height="34" rx="3"/>
+          <text class="tp" x="428" y="633">VIN 7-12 V</text>
+          <text class="ts" x="572" y="624">board supply from the same 12 V brick,</text>
+          <text class="ts" x="572" y="641">or USB VBUS while a PC is tethered</text>
+
+          <rect class="pad" x="418" y="660" width="200" height="34" rx="3"/>
+          <text class="tp" x="428" y="683">ST-LINK micro-USB</text>
+          <text class="ts" x="632" y="682">USART2 PA2 / PA3</text>
+
+          <rect class="pad" x="418" y="710" width="100" height="34" rx="3"/>
+          <text class="tp" x="428" y="733">GND</text>
+          <text class="ts" x="532" y="732">to the star point</text>
+
+          <text class="ts" x="532" y="762">PA5 [D13] = LD2: slow blink limp,</text>
+          <text class="ts" x="532" y="780">fast slewing, steady holding.</text>
+        </g>
+
+        <!-- board ground to the bus -->
+        <path class="gnd" d="M 418 727 L 340 727 L 340 1046"/>
+        <!-- USB down to the PC -->
+        <path class="dat" d="M 518 694 L 518 830" marker-end="url(#a-dat)"/>
+
+        <g>
+          <rect class="box" x="400" y="830" width="430" height="120" rx="4"/>
+          <text class="tt" x="418" y="862">GROUND STATION PC</text>
+          <text class="t"  x="418" y="888">perigee-control, termios serial</text>
+          <text class="t"  x="418" y="910">/dev/ttyACM0, 115200 8N1</text>
+          <text class="ts" x="418" y="934">plans the cable wrap; the firmware enforces it</text>
+        </g>
+
+        <!-- ============================================================ signals out -->
+        <path class="sig" d="M 812 422 L 944 422 L 944 500 L 1030 500" marker-end="url(#a-sig)"/>
+        <text class="lbl" x="952" y="494">white</text>
+        <path class="sig" d="M 812 476 L 900 476 L 900 700 L 1030 700" marker-end="url(#a-sig)"/>
+        <text class="lbl" x="908" y="694">white</text>
+
+        <!-- common ground trunk down the device column -->
+        <path class="gnd" d="M 1030 548 L 1000 548 L 1000 1046"/>
+        <path class="gnd" d="M 1030 748 L 1000 748"/>
+        <text class="lbl" x="994" y="640" text-anchor="end">black</text>
+
+        <!-- ============================================================ devices -->
+        <g>
+          <rect class="boxd" x="1030" y="200" width="430" height="200" rx="4"/>
+          <text class="tt" x="1048" y="232">OPEN LOOP // NO ENCODERS</text>
+          <text class="t"  x="1048" y="258">Both gearboxes are positional servos:</text>
+          <text class="t"  x="1048" y="282">the pulse width IS the position.</text>
+          <text class="ts" x="1048" y="306">The 5 kOhm pot is inside the servo and closes</text>
+          <text class="ts" x="1048" y="324">its own loop; nothing comes back on the wire.</text>
+          <text class="ts" x="1048" y="348">The firmware's position is the slew-limited</text>
+          <text class="ts" x="1048" y="366">command. A stalled or unpowered axis cannot</text>
+          <text class="ts" x="1048" y="384">be detected.</text>
+        </g>
+
+        <g>
+          <rect class="box" x="1030" y="450" width="430" height="172" rx="4"/>
+          <text class="tt" x="1048" y="480">AZIMUTH // STINGRAY-4</text>
+          <text class="ts" x="1048" y="502">3215-0001-0004, 4:1, 450 deg travel</text>
+          <text class="t"  x="1048" y="526">3-pin TJC8  |  500-2500 us @ 50 Hz</text>
+          <text class="t"  x="1048" y="548">0.225 deg/us (endpoint calibration)</text>
+          <text class="tp" x="1048" y="572">SOFT LIMIT 0..400 deg  (cable wrap)</text>
+          <text class="ts" x="1048" y="594">536..2313 us. 1.25-turn loop, no slip ring.</text>
+          <text class="ts" x="1048" y="612">Stall 3.0 A at 7.4 V.</text>
+        </g>
+
+        <g>
+          <rect class="box" x="1030" y="650" width="430" height="176" rx="4"/>
+          <text class="tt" x="1048" y="680">ELEVATION // STINGRAY-9</text>
+          <text class="ts" x="1048" y="702">3215-0001-0009, 9:1, 200 deg travel</text>
+          <text class="t"  x="1048" y="726">3-pin TJC8  |  500-2500 us @ 50 Hz</text>
+          <text class="t"  x="1048" y="748">0.100 deg/us (matches the published figure)</text>
+          <text class="tp" x="1048" y="772">SOFT LIMIT -2..91 deg  (build offset 5)</text>
+          <text class="ts" x="1048" y="794">530..1460 us. Open loop, no encoder.</text>
+          <text class="ts" x="1048" y="812">Stall 3.0 A at 7.4 V.</text>
+        </g>
+
+        <!-- ============================================================ servo rail -->
+        <rect x="1488" y="420" width="16" height="600" fill="#ff5b4a" rx="3"/>
+        <text class="tp" x="1540" y="720" transform="rotate(-90 1540 720)" text-anchor="middle">+7.4 V SERVO RAIL  10 A</text>
+        <path class="pwr" d="M 1460 500 L 1488 500" marker-start="url(#a-pwr)"/>
+        <path class="pwr" d="M 1460 700 L 1488 700" marker-start="url(#a-pwr)"/>
+
+        <!-- ============================================================ ground bus -->
+        <rect x="120" y="1046" width="1390" height="16" fill="#8a8f94" rx="3"/>
+        <text class="tp" x="124" y="1038" fill="#d6dade">COMMON GROUND  //  one star point: rail negative, Nucleo GND, both servo blacks</text>
+
+        <!-- ============================================================ cautions -->
+        <g>
+          <rect class="boxd" x="1030" y="850" width="430" height="146" rx="4"/>
+          <text class="ts"   x="1044" y="872">WHAT NOT TO DO</text>
+          <text class="warn" x="1044" y="896">Never run servo current through the Nucleo.</text>
+          <text class="ts"   x="1044" y="914">Its regulator cannot pass amps; routing the servo</text>
+          <text class="ts"   x="1044" y="932">supply through the board resets or destroys it.</text>
+          <text class="warn" x="1044" y="956">Never daisy-chain the two servos' power.</text>
+          <text class="ts"   x="1044" y="974">Each gets its own red and black pair to the rail.</text>
+          <text class="ts"   x="1044" y="990">3.3 V signal is in spec: pulse amplitude is 3-5 V.</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>Power enters as 12&nbsp;V and splits immediately: a buck converter makes the 7.4&nbsp;V
+    servo rail, and a separate tap feeds the Nucleo's VIN. Only signal wires cross between the board and
+    the gearboxes. Every ground in the system lands on the one star point along the bottom.</figcaption>
+  </figure>
+</section>
+
+<!-- ================================================================= pins -->
+<section>
+  <h2>Connections</h2>
+  <p class="sub">Pin table</p>
+  <table>
+    <caption>Read out of <span class="mono">firmware/perigee_mount_stm32/src/hw.rs</span></caption>
+    <thead>
+      <tr><th>Signal</th><th>STM32 pin</th><th>Peripheral</th><th>Header</th><th>Level</th><th>Goes to</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>AZ servo signal</strong></td><td class="pin">PC7</td><td>TIM3 CH2, AF2</td><td class="num">D9</td><td>3.3&nbsp;V push-pull</td><td>Stingray-4 white lead</td></tr>
+      <tr><td><strong>EL servo signal</strong></td><td class="pin">PB6</td><td>TIM4 CH1, AF2</td><td class="num">D10</td><td>3.3&nbsp;V push-pull</td><td>Stingray-9 white lead</td></tr>
+      <tr><td>PC link TX / RX</td><td class="pin">PA2 / PA3</td><td>USART2, AF7, 115200 8N1</td><td class="num">ST-LINK VCP</td><td>3.3&nbsp;V</td><td><code>/dev/ttyACM0</code></td></tr>
+      <tr><td>Status LED</td><td class="pin">PA5</td><td>GPIO output</td><td class="num">D13</td><td>on-board LD2</td><td>&mdash;</td></tr>
+      <tr><td>Board supply</td><td class="pin">VIN</td><td>&mdash;</td><td class="num">VIN</td><td>7&ndash;12&nbsp;V</td><td>12&nbsp;V brick, or USB VBUS</td></tr>
+      <tr><td>Ground</td><td class="pin">GND</td><td>&mdash;</td><td class="num">GND</td><td>&mdash;</td><td>the star point</td></tr>
+      <tr class="dim"><td>AZ &ldquo;feedback&rdquo;</td><td class="pin">PA0</td><td>&mdash;</td><td class="num">A0</td><td>&mdash;</td><td><span class="nc">nothing. Leave bare.</span></td></tr>
+      <tr class="dim"><td>EL &ldquo;feedback&rdquo;</td><td class="pin">PA1</td><td>&mdash;</td><td class="num">A1</td><td>&mdash;</td><td><span class="nc">nothing. Leave bare.</span></td></tr>
+      <tr class="dim"><td>(free)</td><td class="pin">PB8 / PB9</td><td>&mdash;</td><td class="num">D15 / D14</td><td>&mdash;</td><td><span class="nc">nothing; reset state, not configured</span></td></tr>
+    </tbody>
+  </table>
+
+  <p>The Uno's D9 / D10 assignment carried straight over to the Nucleo's Arduino header, which is why the
+  numbers look familiar. The silicon behind them is different: hardware PWM out of TIM3 and TIM4 in
+  0.3125&nbsp;&micro;s steps, not the <code>Servo</code> library's software timing.</p>
+
+  <h3>Timer setup</h3>
+  <p>Both timers run from the internal 16&nbsp;MHz oscillator (HSI, untouched, so every bus is at 16&nbsp;MHz)
+  with <code>PSC = 4</code>, giving a 3.2&nbsp;MHz tick, and <code>ARR = 63999</code> for a 20&nbsp;ms frame
+  &mdash; 50&nbsp;Hz, as the gearboxes require. One tick of pulse width is therefore 0.3125&nbsp;&micro;s, which
+  is 0.070&deg; on azimuth and 0.031&deg; on elevation. Preload is on for both channels, so a new width always
+  starts on a frame boundary and a pulse is never truncated mid-cycle.</p>
+
+  <h3>The rest of the peripheral set</h3>
+  <ul>
+    <li><strong>USART2 into DMA.</strong> Received bytes land in a 1024-byte circular buffer on DMA1 stream 5,
+    channel 4, so a slow reply never drops an incoming command. A burst bigger than the buffer (a long script
+    pasted in one go) is reported, <span class="mono">ERR receive overrun: input lost, resend</span>, instead of
+    losing commands silently.</li>
+    <li><strong>Independent watchdog, about 1&nbsp;s.</strong> LSI 32&nbsp;kHz with <code>PR = 4</code> and
+    <code>RLR = 500</code>. If the main loop stalls, the chip resets and the servos go limp. It is frozen while
+    a debugger has the core halted.</li>
+    <li><strong>No ADC and no I2C.</strong> Not merely unused: unclocked and unconfigured. There is no
+    encoder on either axis.</li>
+  </ul>
+
+  <div class="warnbox">
+    <span class="tag">PA0 and PA1 are deliberately empty</span>
+    <p>These gearboxes are positional servos with a 3-position TJC8 connector (signal, V+, GND) and a 5&nbsp;k&Omega;
+    pot internal to the servo's own control loop. There is no fourth wire and no feedback output. The old Arduino
+    sketch and the first STM32 build read A0 / A1 as &ldquo;feedback wires&rdquo;; those reads returned
+    floating-pin noise, and acting on them would have been worse than reading nothing.</p>
+  </div>
+</section>
+
+<!-- ================================================================= power -->
+<section>
+  <h2>Power</h2>
+  <p class="sub">One rail for muscle, one for the board, one ground</p>
+
+  <table>
+    <thead><tr><th>Rail</th><th>Voltage</th><th>Current</th><th>Feeds</th></tr></thead>
+    <tbody>
+      <tr><td>Servo rail</td><td class="num"><strong>7.4&nbsp;V</strong></td><td class="num"><strong>10&nbsp;A</strong></td><td>both Stingrays, nothing else</td></tr>
+      <tr><td>Board</td><td class="num">7&ndash;12&nbsp;V into VIN, or USB VBUS</td><td class="num">&lt; 0.2&nbsp;A</td><td>the Nucleo and its 3.3&nbsp;V island</td></tr>
+    </tbody>
+  </table>
+
+  <p>Two rules, each of which has a way of destroying something:</p>
+  <ol class="rules">
+    <li><strong>Each servo's red and black go straight to the rail.</strong>
+    Not through the Nucleo, not daisy-chained through each other. The board's regulator cannot pass amps;
+    routing servo current through it resets or destroys the board.</li>
+    <li><strong>Common ground is mandatory, at one star point.</strong>
+    Rail negative, a Nucleo GND pin and both servo blacks all land on the same node.
+    Without the tie the servos have no reference for the pulse and behave randomly or not at all.</li>
+  </ol>
+
+  <p>The 10&nbsp;A figure is 2&nbsp;&times;&nbsp;3.0&nbsp;A stall at 7.4&nbsp;V, times 1.7 for brushed-DC
+  reversal transients and inrush. Typical tracking draw is well under 1&nbsp;A total; the rating exists for the
+  stall and reversal case, not for normal operation. 3.3&nbsp;V logic is in spec, since the published pulse
+  amplitude is 3&ndash;5&nbsp;V. If a gearbox ignores the signal over 300&nbsp;mm of 22&nbsp;AWG lead, a
+  74AHCT125 buffer on 5&nbsp;V fixes it; that is a fallback, not a starting requirement.</p>
+</section>
+
+<!-- ================================================================= limits -->
+<section>
+  <h2>Limits</h2>
+  <p class="sub">Why azimuth cannot tangle the cable</p>
+
+  <table>
+    <caption>From <span class="mono">AZ_CAL</span> and <span class="mono">EL_CAL</span> in <span class="mono">src/limits.rs</span></caption>
+    <thead>
+      <tr><th>Axis</th><th>Hardware travel</th><th>Build offset</th><th>Soft window</th><th>Pulse at the window ends</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>AZ</strong> &middot; Stingray-4<br><span class="mono" style="font-size:12.5px;color:var(--ink-faint)">3215-0001-0004, 4:1</span></td>
+        <td class="num">450&deg;</td>
+        <td class="num">8&deg;</td>
+        <td class="num"><strong>0 &hellip; 400&deg;</strong></td>
+        <td class="num">536 &hellip; 2313&nbsp;&micro;s</td>
+        <td>1.25-turn cable service loop, no slip ring; 8&deg; keeps either vendor slope clear of both stops</td>
+      </tr>
+      <tr>
+        <td><strong>EL</strong> &middot; Stingray-9<br><span class="mono" style="font-size:12.5px;color:var(--ink-faint)">3215-0001-0009, 9:1</span></td>
+        <td class="num">200&deg;</td>
+        <td class="num">5&deg;</td>
+        <td class="num"><strong>&minus;2 &hellip; 91&deg;</strong></td>
+        <td class="num">530 &hellip; 1460&nbsp;&micro;s</td>
+        <td>margin off both mechanical stops</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>Two frames, and the difference matters. A <em>gearbox</em> angle runs 0 to the mechanical travel, measured
+  from the low end stop. A <em>mount</em> angle is what the protocol and the host talk in, and
+  <span class="mono">mount = gearbox &minus; offset</span>. The offset is therefore both the frame tie and the
+  mechanical margin at the low end: with <code>AZ_CAL.offset = 8.0</code>, mount azimuth 0 sits 8&deg; off the
+  hard stop. Eight rather than a tighter two, because goBILDA publish two slopes that disagree by 2&nbsp;%, and
+  only with 8&deg; does the window stay clear of both stops under either one. Elevation's <code>offset = 5.0</code> is the built geometry, and its lower limit of &minus;2&deg;
+  rather than &minus;5&deg; is what buys margin at the bottom stop &mdash; at &minus;5&deg; the gearbox would sit
+  at exactly 0&deg;, hard against the stop, with a 9&nbsp;kg dish on the arm.</p>
+
+  <p>Above that sits an independent backstop. <code>gear_margin = 2.0</code> keeps 2&deg; of gearbox travel clear
+  of <em>each</em> mechanical end whatever the soft limits say, so a mis-edited <code>limit_hi</code> still cannot
+  reach a stop. There is a host test for exactly that case.</p>
+
+  <p>Azimuth is an <strong>absolute, continuous, unwrapped</strong> angle: 0 at one mechanical end of the
+  Stingray-4's 450&deg; of travel, rising monotonically to 450 at the other. There is no modular arithmetic on
+  this axis anywhere, in the firmware or on the host, so a move from A to B always traverses
+  <span class="mono">[min(A,B), max(A,B)]</span> and nothing else. A command can never be satisfied &ldquo;the
+  short way round&rdquo; through the cable wrap.</p>
+
+  <h3>Two independent layers</h3>
+  <div class="cards">
+    <div class="card">
+      <span class="label">Layer 1 &middot; host, plans</span>
+      <p style="margin:0"><span class="mono">perigee-control/src/mount.rs</span> decides <em>which</em> wrap to
+      use. <code>nearest_allowed_az</code> is the point rule; <code>solve_path</code> picks a single wrap for a
+      whole predicted pass. A bug here costs a pass.</p>
+    </div>
+    <div class="card">
+      <span class="label">Layer 2 &middot; firmware, enforces</span>
+      <p style="margin:0"><span class="mono">firmware/&hellip;/src/limits.rs</span> enforces the window
+      regardless. Every pulse goes through <code>AxisCal::pulse_of</code>, clamped into the mount window and then
+      into the servo's pulse range. A bug on the host cannot reach the cable.</p>
+    </div>
+  </div>
+
+  <div class="worked">
+    <h3>The 399 &rarr; 401 case, concretely</h3>
+    <ol>
+      <li>The azimuth axis is at <strong>399&deg;</strong>. The next pointing wants the direction that
+      <strong>401&deg;</strong> would reach &mdash; two degrees away, and straight through the cable.</li>
+      <li>The host asks <code>nearest_allowed_az</code>. 401 is outside the 0&nbsp;&hellip;&nbsp;400 window, so it
+      is not a candidate at all. Its whole-turn equivalent <strong>41&deg;</strong> is inside, and it is the only
+      candidate.</li>
+      <li>The answer is 41, so the mount <strong>unwinds 358&deg;</strong> the other way rather than tangling two.</li>
+      <li>Had the host sent 401 anyway, the firmware would reply
+      <span class="mono">ERR out of window, clamped to 400.00</span> and stop at the limit. It does not reason
+      about wraps: it refuses and clamps. 401 becomes 400, never 41.</li>
+    </ol>
+  </div>
+
+  <h3>Wrap chosen once per pass, not per sample</h3>
+  <p><code>solve_path</code> unwraps a whole predicted track into one continuous azimuth run, then shifts it by
+  whole turns to find an offset where the entire pass fits inside the window. Where several offsets fit, the one
+  whose start is nearest the current axis position wins (shortest slew to the AOS point), and margin to the limits
+  breaks remaining ties. Where <em>no</em> offset fits, because the pass runs across the seam at the window's ends,
+  one mid-pass unwind is scheduled at the split point that loses the fewest samples (the dish runs the long way
+  round, about 16&nbsp;s off the satellite at 20&nbsp;deg/s) and recorded so the tracker logs it instead of the
+  operator discovering it. In a count of 908 real passes that was 3&ndash;6&nbsp;% of them.</p>
+
+  <p>Because the window spans more than a full turn, 40&deg; of bearings are reachable at two axis positions
+  360&deg; apart; choosing between them is the whole game. There is no flip-over (removed 2026-10-01 for
+  simplicity): elevation stops a degree past vertical, so each sky direction has one pose. A pass near the zenith
+  swings the azimuth quickly at the top and may lag for a few seconds there, which costs little: near the zenith
+  an azimuth error barely moves the beam.</p>
+
+  <div class="warnbox">
+    <span class="tag">Two places, edited together</span>
+    <p>The limit numbers live in two places and <strong>must be edited together</strong>:
+    <code>az_limit_lo_deg</code> / <code>az_limit_hi_deg</code> / <code>el_min_deg</code> / <code>el_max_deg</code>
+    on the host, and <code>AZ_CAL</code> / <code>EL_CAL</code> in <code>limits.rs</code>. As of this page they
+    agree: <code>control.toml</code> carries 0 / 400 and &minus;2 / 91, and its park pose (200, 45) matches the
+    firmware's <code>PARK</code>. The host narrows anything wider into the firmware window on load, so an edit
+    to <code>control.toml</code> alone can only tighten it.</p>
+  </div>
+</section>
+
+<!-- ================================================================= protocol -->
+<section>
+  <h2>Protocol</h2>
+  <p class="sub">Line-oriented ASCII over USART2</p>
+<pre>PING              PONG
+ID                ID PERIGEE-MOUNT fw4-stm32 PROTO T4 AZ 0-400 EL -2-91
+?                 T4 tgt_az tgt_el cmd_az cmd_el set_az set_el NA -1 flags
+GO az el          OK GO az el        | ERR out of window, clamped to ...
+AZ deg / EL deg   OK AZ deg / OK EL deg
+STOP              OK STOP            hold where the axes are now
+PARK              OK PARK 200.0 45.0
+RATE az el        OK RATE ...        slew limits, deg/s (default 20 / 15, clamped 0.1..90)
+TEL hz            OK TEL hz          telemetry rate, 0 = off, max 20
+RAW AZ|EL us      OK RAW ...         move to the angle that pulse means (500..2500 us): ramped, clamped into the window
+ZERO az el        OK ZERO az el      declare where the axes really are; only while limp (OFF first)
+CAL               OK CAL ...         windows and pulse endpoints
+OFF               OK OFF             stop the pulses, servos go limp</pre>
+
+  <p>On boot: <span class="mono">READY PERIGEE-MOUNT fw4-stm32 PROTO T4</span>, then either
+  <span class="mono">POS &lt;az&gt; &lt;el&gt; restored, holding</span> or
+  <span class="mono">POS UNKNOWN</span>.</p>
+
+  <div class="note">
+    <span class="tag">No telemetry field is a measurement</span>
+    <p><span class="mono">tgt</span> is the requested target after the window clamp, <span class="mono">cmd</span>
+    the slew-limited command that is the pulse on the wire, and <span class="mono">set</span> that command lagged
+    by a pessimistic servo speed model. Neither axis has an encoder, so fields 7&ndash;8 are always
+    <span class="mono">NA -1</span>; they stay only so the line shape does not change.
+    <span class="mono">flags</span>: K position known, M moving, A / E azimuth / elevation target clipped at the
+    limit, <span class="mono">-</span> for none.</p>
+  </div>
+
+  <h3>Position across a reset, and not across a power cycle</h3>
+  <p>The last position is kept in a <code>.uninit</code> region of SRAM that cortex-m-rt's startup code does not
+  clear, behind a magic word (<span class="mono">0x5047_4D04</span>) and a rotated-XOR checksum that catches a
+  half-written record, uninitialised RAM that happens to hold the magic, and NaN or infinite angles.</p>
+  <ul>
+    <li><strong>A system reset keeps it.</strong> The 1&nbsp;s watchdog, the reset button, a
+    <code>probe-rs run</code> &mdash; SRAM survives all three, so the firmware restores the position and
+    immediately holds the same pulses instead of slewing blind or jumping on the first command.</li>
+    <li><strong>A power cycle loses it.</strong> SRAM is gone, the checksum fails, the board stays limp and
+    reports <span class="mono">POS UNKNOWN</span>. Every move is refused (<span class="mono">ERR position unknown</span>) until <code>ZERO az el</code> arrives.</li>
+  </ul>
+  <p>Surviving a power cycle would need the RTC backup registers and a VBAT cell. That is a deliberate next step,
+  not something this build claims.</p>
+</section>
+
+<!-- ================================================================= tests -->
+<section>
+  <h2>Verification</h2>
+  <p class="sub">What is actually proven, and by what</p>
+
+  <div class="cards">
+    <div class="card ok">
+      <span class="label">Host suite &middot; cargo test</span>
+      <div class="big">63 / 63</div>
+      <p class="foot">mount 24, tracking 13, config 12, serial 7, tiles 5, console 1, command 1. Includes
+      &ldquo;no plan ever commands an azimuth outside the window&rdquo; and
+      &ldquo;every bearing is reachable and never outside the window&rdquo;.</p>
+    </div>
+    <div class="card ok">
+      <span class="label">Firmware arithmetic &middot; ./test_host.sh</span>
+      <div class="big">18 / 18</div>
+      <p class="foot"><code>limits.rs</code> compiled as its own crate root under <code>rustc --test</code>, the
+      Rust equivalent of a bare-metal unit test. No board needed, nothing flashed.</p>
+    </div>
+    <div class="card ok">
+      <span class="label">Builds</span>
+      <div class="big">clean</div>
+      <p class="foot">Host and <code>thumbv7em-none-eabihf</code> firmware both build with no warnings.</p>
+    </div>
+  </div>
+
+  <p>The firmware tests are the ones that matter for the cable: every pulse is clamped however absurd the command
+  (&minus;10<sup>9</sup> through 10<sup>9</sup>), a full 0&nbsp;&rarr;&nbsp;400 sweep at the 20&nbsp;deg/s rate
+  limit never leaves the window at any intermediate frame, 401 is refused rather than wrapped, a deliberately
+  mis-edited limit still cannot reach a mechanical stop, pulse and degrees round-trip, and the persisted position
+  rejects a flipped bit, a bare magic word, NaN and both infinities.</p>
+
+  <div class="note">
+    <span class="tag">The limit of what software can prove</span>
+    <p>Every number in the pulse map is arithmetic on bench constants that have not been measured yet. The tests
+    show the arithmetic is self-consistent and that no path through the code can exceed its own window. They
+    cannot show the window is in the right place on real hardware. That is what the checklist below is for.</p>
+  </div>
+</section>
+
+<!-- ================================================================= bench -->
+<section>
+  <h2>Bench checklist</h2>
+  <p class="sub">Unverified until the hardware is in front of you</p>
+
+  <ol class="check">
+    <li>
+      <strong>Measure each axis's slope inside the window.</strong>
+      <p><code>RAW</code> moves to the angle its pulse width means, ramped like <code>GO</code> and clamped into the
+      soft window (<code>RAW AZ 500</code> ends at 535.56&nbsp;&micro;s), so it cannot reach a stop and is not meant
+      to. Step <code>RAW AZ</code> from 600 to 2250 and <code>RAW EL</code> from 600 to 1400, read the angle at each
+      step, and fit <code>us_per_deg</code>. Full procedure: <code>docs/calibration.md</code> &sect;6.3.</p>
+    </li>
+    <li>
+      <strong>Check the azimuth zero offset.</strong>
+      <p><code>AZ_CAL.offset = 8.0</code> assumes mount azimuth 0 sits 8&deg; off the low stop. Drive
+      <code>GO 0 45</code> and confirm there is still a visible gap to the stop. The gap you measure goes into
+      <code>pulse_at_zero</code> (<code>docs/calibration.md</code> &sect;6.4); the offset itself stays 8.</p>
+    </li>
+    <li>
+      <strong>Check the elevation offset.</strong>
+      <p><code>EL_CAL.offset = 5.0</code> is the built geometry. Drive <code>GO 200 0</code> and confirm the
+      boresight is level. If it is not, both elevation limits move with the correction.</p>
+    </li>
+    <li>
+      <strong>Re-zero after every power cycle.</strong>
+      <p>A cold boot reports <span class="mono">POS UNKNOWN</span> and stays limp. Send <code>ZERO az el</code>
+      with where the axes physically are: until then every motion command is refused (<span class="mono">ERR position
+      unknown</span>), so nothing slews from a guessed origin. <code>ZERO</code> is accepted only while the servos are
+      limp; to re-declare a board that is holding, send <code>OFF</code> first. A reset button press or watchdog bite
+      does <em>not</em> need this; SRAM holds the position through both.</p>
+    </li>
+    <li>
+      <strong>Confirm 3.3&nbsp;V signalling over the real lead length.</strong>
+      <p>Published pulse amplitude is 3&ndash;5&nbsp;V, so 3.3&nbsp;V is in spec, but 300&nbsp;mm of 22&nbsp;AWG
+      has not been tried. If a gearbox ignores the signal, a 74AHCT125 buffer on 5&nbsp;V is the fix.</p>
+    </li>
+    <li>
+      <strong>Sky calibration, afterwards.</strong>
+      <p>The sky tie lives on the host, in perigee-control's <code>calibration.toml</code>, not in the firmware:
+      <code>az_center_bearing_deg</code> ties mount azimuth to a true bearing, and an optional elevation correction
+      ties mount elevation to the real one. Point the dish at something whose direction you know and type
+      <code>/here AZ EL</code> in the console (or <code>/bearing DEG</code>); <code>/here clear</code> forgets it. Until then
+      the frame is a nominal 217.5 (the middle of the 120&ndash;315 dish sector) and a real mount will not track.</p>
+    </li>
+  </ol>
+</section>
+
+<footer>
+  Sources of truth: <span class="mono">firmware/perigee_mount_stm32/src/{hw,limits,main}.rs</span> &middot;
+  <span class="mono">src/{mount,config,serial,tracking}.rs</span> &middot;
+  <span class="mono">control.toml</span>. Diagram: <span class="mono">docs/wiring.svg</span>, inlined.
+  Prose reference: <span class="mono">docs/wiring.md</span>.
+</footer>
+
+</main>
+</body>
+</html>

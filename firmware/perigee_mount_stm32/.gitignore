@@ -1,0 +1,7 @@
+target
+# build outputs, should one land outside target/
+*.o
+*.elf
+*.bin
+*.hex
+*.map

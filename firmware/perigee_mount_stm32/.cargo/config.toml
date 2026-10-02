@@ -1,0 +1,9 @@
+# Build for the chip (Arm Cortex-M4 with floating-point hardware), not for this computer
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# Use cortex-m-rt's linker recipe (link.x), which reads memory.x
+rustflags = ["-C", "link-arg=-Tlink.x"]
+# `cargo run` loads the program onto the board through the ST-LINK and starts it
+runner = "probe-rs run --chip STM32F401RETx"
