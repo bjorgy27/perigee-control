@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1080" width="1560" height="1080" font-family="ui-monospace, 'DejaVu Sans Mono', monospace">
   <title>PERIGEE mount wiring: Nucleo-F401RE, two goBILDA Stingray servo gearboxes, open loop</title>
   <desc>Azimuth Stingray-4 signal on PC7 (TIM3 CH2, header D9), elevation Stingray-9 signal on PB6
-  (TIM4 CH1, header D10), USART2 PA2/PA3 to the PC over the ST-LINK. No encoder on either axis;
+  (TIM4 CH1, header D10), USART2 PA2/PA3 to the PC over the ST-LINK. PC13, the blue USER button, is
+  the servo enable: pulses go out only while it is held. No encoder on either axis;
   PA0/PA1 and PB8/PB9 are left unconnected. Servo power is a separate 7.4 V 10 A rail with a
   common ground to the board.</desc>
 
@@ -99,6 +100,11 @@
     <text class="ts"   x="430" y="298">No encoder on either axis. The firmware leaves</text>
     <text class="ts"   x="430" y="316">these pins and I2C1 unconfigured.</text>
 
+    <!-- the enable button: on-board, nothing to wire, but it gates every pulse -->
+    <rect class="pad" x="418" y="344" width="394" height="54" rx="4"/>
+    <text class="tp" x="430" y="366">PC13 = B1, blue USER button: SERVO ENABLE</text>
+    <text class="ts" x="430" y="386">Wire nothing. Pulses only while it is held.</text>
+
     <!-- outgoing pads, right side -->
     <rect class="pad" x="694" y="406" width="118" height="32" rx="3"/>
     <text class="tp" x="704" y="428">PC7  [D9]</text>
@@ -130,8 +136,9 @@
     <text class="tp" x="428" y="733">GND</text>
     <text class="ts" x="532" y="732">to the star point</text>
 
-    <text class="ts" x="532" y="762">PA5 [D13] = LD2: slow blink limp,</text>
-    <text class="ts" x="532" y="780">fast slewing, steady holding.</text>
+    <text class="ts" x="532" y="752">PA5 [D13] = LD2: slow blink limp,</text>
+    <text class="ts" x="532" y="768">double flash waiting on the button,</text>
+    <text class="ts" x="532" y="784">fast slewing, steady holding.</text>
   </g>
 
   <!-- board ground to the bus -->

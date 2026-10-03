@@ -16,6 +16,7 @@ Vendor specs and the power sizing are in `~/.openclaw/workspace/reports/stingray
 | **AZ servo signal** | **PC7** | **TIM3 CH2**, AF2 | D9 | 3.3 V push-pull | Stingray-4 white lead |
 | **EL servo signal** | **PB6** | **TIM4 CH1**, AF2 | D10 | 3.3 V push-pull | Stingray-9 white lead |
 | PC link TX / RX | PA2 / PA3 | USART2, AF7, 115200 8N1 | ST-LINK VCP | 3.3 V | `/dev/ttyACM0` |
+| **Servo enable** | **PC13** | GPIO in, pull-up | — | active low | **B1, the blue USER button. On-board; wire nothing.** |
 | Status LED | PA5 | GPIO out | D13 | on-board LD2 | — |
 | Board supply | VIN | — | VIN | 7–12 V | 12 V brick (or USB VBUS) |
 | Ground | GND | — | GND | — | the star point |
@@ -33,6 +34,26 @@ Both timers run from the 16 MHz HSI with `PSC = 4`, so they tick at 3.2 MHz, and
 gives a 20 ms frame — 50 Hz, as the gearboxes require. A pulse is therefore set in steps of
 0.3125 µs, about 0.07° on azimuth and 0.03° on elevation. Preload is on, so a new width always
 starts on a frame boundary and a pulse is never truncated mid-cycle.
+
+### The enable button (PC13)
+
+The blue USER button is a **dead-man switch on the servo pulses**: the gearboxes are driven only
+while it is held down. It needs no wiring — the Nucleo already pulls PC13 up to 3.3 V and the button
+pulls it to ground — and the firmware enables the internal pull-up as well, so a pin that is somehow
+left floating reads *released* and the servos stay limp. Failing open is the only safe direction for
+an enable.
+
+Both permissions are required before a pulse goes out: the button, and the serial side (`armed`,
+which any move command sets and `OFF` clears). A `GO` that arrives with nobody at the board is
+accepted, sets the target, and waits; pressing the button then runs the move under the usual `RATE`
+limit. The button never moves an axis by itself — releasing drops the pulses where they are, pressing
+picks the same pulses back up — so it is safe to use in the middle of a slew.
+
+Each transition prints a `NOTE` line, `ID` reports `ENABLE BUTTON HELD` or `RELEASED`, and LD2
+double-flashes while the firmware is armed and waiting for a thumb. The telemetry line's shape and
+its `KMAE` flag letters are unchanged on purpose: perigee-control parses that letter set strictly
+(`src/mount.rs`), so adding a flag for the button would make the host refuse every line, and the
+host therefore needs no rebuild for this firmware.
 
 ### PA0 / PA1 are deliberately empty
 
@@ -109,7 +130,7 @@ Nothing below can be checked without the hardware. All of it is unverified until
 
 ```
 PING              PONG
-ID                ID PERIGEE-MOUNT fw4-stm32 PROTO T4 AZ 0-400 EL -2-91
+ID                ID PERIGEE-MOUNT fw4-stm32 PROTO T4 AZ 0-400 EL -2-91 ENABLE BUTTON HELD|RELEASED
 ?                 T4 tgt_az tgt_el cmd_az cmd_el set_az set_el NA -1 flags
 GO az el          OK GO az el        | ERR out of window, clamped to ...
 AZ deg / EL deg   OK AZ deg / OK EL deg
@@ -120,11 +141,12 @@ TEL hz            OK TEL hz          telemetry rate, 0 = off
 RAW AZ|EL us      OK RAW ...         move to the angle that pulse means: ramped, clamped into the window
 ZERO az el        OK ZERO az el      declare where the axes really are; only while limp (OFF first)
 CAL               OK CAL ...         windows and pulse endpoints
-OFF               OK OFF             stop the pulses, servos go limp
+OFF               OK OFF             stop the pulses, servos go limp (and disarm)
 ```
 
 On boot: `READY PERIGEE-MOUNT fw4-stm32 PROTO T4`, then either `POS <az> <el> restored, holding` or
-`POS UNKNOWN: ...`.
+`POS UNKNOWN: ...`, then a `NOTE` naming the enable button and its state. "Holding" now means
+"holding as soon as the button is held".
 
 Received bytes land in a 1024-byte ring by DMA, far more than perigee-control ever has in flight. If
 more than that arrives before the main loop reads it (a long script pasted in one go), the firmware

@@ -22,6 +22,17 @@
     on boot:    READY PERIGEE-MOUNT fw4-stm32 PROTO T4  then  POS <az> <el> | POS UNKNOWN
     on a burst over the 1 KB receive ring:  ERR receive overrun: input lost, resend
 
+  THE ENABLE BUTTON. B1, the blue USER button on the Nucleo (PC13), is a dead-man switch on the
+  servo pulses: the gearboxes are driven only while it is held down. Both permissions are needed,
+  the button and the serial side (`armed`, which any move sets and OFF clears), so a command that
+  arrives with nobody at the board sets the target and waits, and pressing the button then runs it
+  under the usual slew limit. The button never moves an axis by itself: letting go drops the pulses
+  where they are and pressing picks the same pulses back up, so it is safe to use mid-slew. It fails
+  in the limp direction -- PC13 is pulled up by the board and again internally, so a broken enable
+  reads "released". Each transition is reported as a NOTE line, and LD2 double-flashes while armed
+  and waiting for a thumb. The telemetry line's shape and flag letters are deliberately unchanged,
+  so perigee-control needs no rebuild to talk to this firmware; `ID` reports the button's state.
+
   TELEMETRY, and why it has a version tag (`limits::TEL_TAG`). The line carries three different
   position claims because they are three different things and the host has to be able to tell them
   apart: `tgt` is what was asked for after the window clamp, `cmd` is the slew-rate-ramped command
@@ -80,6 +91,9 @@ const RAW_US: (f32, f32) = (500.0, 2500.0);
 const TICK_US: u32 = 20_000;
 /// A command this far outside the window is a protocol error worth reporting, not float noise
 const WINDOW_TOL: f32 = 0.02;
+/// The enable button must read the same for this long before it counts: B1 has a 100 nF cap on the
+/// board, and this is the belt to that braces against a bouncing contact mid-slew.
+const ENABLE_DEBOUNCE_US: u32 = 20_000;
 
 /// The saved position, in `.uninit` so cortex-m-rt's startup leaves it alone across a reset.
 /// Single-threaded: the main loop is the only thing that touches it.
@@ -99,6 +113,8 @@ struct Mount {
     rate: [f32; 2],    // deg/s
     pulse: [f32; 2],   // pulse on the wire now, 0 = off
     driving: bool,     // pulses are going out
+    armed: bool,       // the serial side wants the wire: OFF clears it, any move sets it
+    enable: bool,      // B1, the blue USER button, is held: the hardware half of the permission
     known: bool,       // the position estimate is anchored to something real
     clip: [bool; 2],   // the standing target was clamped at this axis's limit
     tel_hz: f32,
@@ -112,7 +128,7 @@ impl Mount {
             None => (PARK, false),
         };
         Mount { cmd, tgt: cmd, settled: cmd, rate: [20.0, 15.0], pulse: [0.0; 2],
-                driving: false, known, clip: [false; 2], tel_hz: 0.0 }
+                driving: false, armed: false, enable: false, known, clip: [false; 2], tel_hz: 0.0 }
     }
 
     /// The only way a pulse reaches a servo. `limits::pulse_of` clamps into the mount window and then
@@ -134,21 +150,59 @@ impl Mount {
         unsafe { core::ptr::write_volatile((&raw mut SAVED).cast::<Persist>(), p) };
     }
 
-    /// Called before any motion: start the pulses if they are off, from a position that does not make
-    /// the servo jump: the restored, declared (ZERO) or last-held command.
+    /// Called before any motion: the serial side asks for the wire.
+    ///
+    /// Asking is not getting. The pulses need **both** permissions — this one and the blue USER
+    /// button held down — so a command that arrives with nobody's thumb on the board sets the target
+    /// and waits. Pressing the button then runs it, slew-rate limited like any other move.
     fn take_wire(&mut self) {
-        if !self.driving {
-            for a in [AZ, EL] {
-                self.cmd[a] = cal(a).clamp_mount(self.cmd[a]);
-                let d = self.cmd[a];
-                self.drive(a, d);
-            }
-            // The pulses were off, so the servo has had as long as it likes to be where the last
-            // pulse left it: the settle model starts caught up rather than pretending to lag.
-            self.settled = self.cmd;
-            self.driving = true;
-            self.save();
+        self.armed = true;
+        if self.enable && self.known && !self.driving { self.engage(); }
+    }
+
+    /// Switch the pulses on, from a position that does not make the servo jump: the restored,
+    /// declared (ZERO) or last-held command. The single place in this firmware that starts driving.
+    fn engage(&mut self) {
+        for a in [AZ, EL] {
+            self.cmd[a] = cal(a).clamp_mount(self.cmd[a]);
+            let d = self.cmd[a];
+            self.drive(a, d);
         }
+        // The pulses were off, so the servo has had as long as it likes to be where the last
+        // pulse left it: the settle model starts caught up rather than pretending to lag.
+        self.settled = self.cmd;
+        self.driving = true;
+        self.save();
+    }
+
+    /// Switch the pulses off and let the gearboxes go limp. Where the axes are is still known; they
+    /// are simply no longer held there. Saved first, so a reset mid-slew restores the real position.
+    fn release(&mut self) {
+        self.save();
+        hw::servo_us(AZ, 0.0);
+        hw::servo_us(EL, 0.0);
+        self.pulse = [0.0; 2];
+        self.driving = false;
+    }
+
+    /// Follow the enable button, debounced by the caller.
+    ///
+    /// This is a dead-man switch, not a latch: let go and the pulses stop within one loop pass. It
+    /// never moves an axis by itself — releasing drops the pulses where they are, and pressing picks
+    /// the same pulses back up — so the button can be used mid-slew without the dish jumping.
+    ///
+    /// `Some(true)` when the pulses just came on, `Some(false)` when they just went off.
+    fn gate(&mut self, held: bool) -> Option<bool> {
+        self.enable = held;
+        if held && self.armed && self.known && !self.driving {
+            self.engage();
+            return Some(true);
+        }
+        if !held && self.driving {
+            self.release();
+            return Some(false);
+        }
+        None
     }
 
     /// Set both targets. Returns true when the request was outside the window and got clamped.
@@ -225,7 +279,9 @@ impl Mount {
         else if is("ID") {
             // PROTO is how a host finds out at connect, rather than at the first telemetry line,
             // that it is talking to a firmware whose line shape it does not understand.
-            say!("ID {FW} PROTO {TEL_TAG} AZ {:.0}-{:.0} EL {:.0}-{:.0}", az_c.mount_lo(), az_c.mount_hi(), el_c.mount_lo(), el_c.mount_hi());
+            say!("ID {FW} PROTO {TEL_TAG} AZ {:.0}-{:.0} EL {:.0}-{:.0} ENABLE BUTTON {}",
+                 az_c.mount_lo(), az_c.mount_hi(), el_c.mount_lo(), el_c.mount_hi(),
+                 if self.enable { "HELD" } else { "RELEASED" });
         }
         else if is("?") { self.telemetry(); }
         else if is("GO") {
@@ -323,11 +379,10 @@ impl Mount {
             }
         }
         else if is("OFF") {
-            // Save first: where the axes are is still known, they are just no longer held there
-            self.save();
-            hw::servo_us(AZ, 0.0); hw::servo_us(EL, 0.0);
-            self.pulse = [0.0; 2];
-            self.driving = false;
+            // Drops the serial half of the permission too, so the pulses do not come back on by
+            // themselves the next time somebody leans on the button.
+            self.armed = false;
+            self.release();
             say!("OK OFF");
         }
         else { say!("ERR unknown command {}", verb); }
@@ -347,8 +402,15 @@ fn main() -> ! {
     };
 
     let mut m = Mount::new(saved);
-    // Hold the restored position straight away: the servos pick up exactly where they were left,
-    // rather than staying limp and then jumping on the first command.
+
+    // The enable button, read before anything can drive: a boot with nobody holding it stays limp.
+    let mut btn_stable = hw::button();
+    let mut btn_raw = btn_stable;
+    let mut btn_since = hw::micros();
+    m.enable = btn_stable;
+
+    // Ask for the wire, so the restored position is picked up the moment the button is held rather
+    // than the axes staying limp and then jumping on the first command.
     if saved.is_some() { m.take_wire(); }
 
     hw::watchdog_start();
@@ -365,6 +427,8 @@ fn main() -> ! {
         None => say!("POS UNKNOWN: send ZERO az el before moving"),
     }
     if watchdog_reset { say!("NOTE reset by watchdog"); }
+    say!("NOTE enable is the blue USER button: the servos are driven only while it is held ({})",
+         if btn_stable { "held now" } else { "released now" });
 
     let mut last_tick = hw::micros();
     let mut last_tel = last_tick;
@@ -403,6 +467,20 @@ fn main() -> ! {
         }
 
         let now = hw::micros();
+
+        // The enable button, debounced: the same reading for ENABLE_DEBOUNCE_US before it counts.
+        // Checked every pass rather than once per frame, so letting go stops the pulses immediately.
+        let raw = hw::button();
+        if raw != btn_raw { btn_raw = raw; btn_since = now; }
+        if btn_raw != btn_stable && now.wrapping_sub(btn_since) >= ENABLE_DEBOUNCE_US {
+            btn_stable = btn_raw;
+            match m.gate(btn_stable) {
+                Some(true) => say!("NOTE enable held: driving, holding {:.2} {:.2}", m.cmd[AZ], m.cmd[EL]),
+                Some(false) => say!("NOTE enable released: pulses off, servos limp"),
+                None => {}
+            }
+        }
+
         // slew, once per servo frame
         let since = now.wrapping_sub(last_tick);
         if since >= TICK_US {
@@ -414,8 +492,16 @@ fn main() -> ! {
             last_tel = now;
             m.telemetry();
         }
-        // LD2: slow blink while limp, fast while slewing, steady while holding
+        // LD2: fast blink while slewing, steady while holding, a double flash while armed and waiting
+        // for a thumb on the button, a slow single blink while nothing has asked for the wire at all.
         let ms = now / 1000;
-        hw::led(if !m.driving { ms % 1000 < 100 } else if m.moving() { ms % 200 < 100 } else { true });
+        hw::led(if m.driving {
+            if m.moving() { ms % 200 < 100 } else { true }
+        } else if m.armed {
+            let p = ms % 1000;
+            p < 80 || (160..240).contains(&p)
+        } else {
+            ms % 1000 < 100
+        });
     }
 }

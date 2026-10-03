@@ -8,6 +8,7 @@
 //!   PB8 / PB9 [D15/D14]  unused, left in their reset state (no encoder is fitted)
 //!   PA2 / PA3   USART2 to the ST-LINK, which shows up on the PC as /dev/ttyACM0
 //!   PA5  [D13]  LD2, the green user LED
+//!   PC13        B1, the blue USER button: the servo enable. Pressed = pulses allowed.
 //!
 //! Clock: the chip's internal 16 MHz oscillator (HSI), untouched. Every bus runs at 16 MHz, which is plenty.
 use core::ptr::{read_volatile, write_volatile};
@@ -36,6 +37,7 @@ const MODER: u32 = 0x00;
 const OTYPER: u32 = 0x04;
 const OSPEEDR: u32 = 0x08;
 const PUPDR: u32 = 0x0C;
+const IDR: u32 = 0x10;
 const BSRR: u32 = 0x18;
 const AFRL: u32 = 0x20;
 
@@ -77,6 +79,7 @@ const DBGMCU_APB1_FZ: u32 = 0xE004_2008;
 
 //---------------------------------------------------------------------------------------------- setup
 /// Pin modes (the two MODER bits)
+const INPUT: u32 = 0b00;
 const OUTPUT: u32 = 0b01;
 const ALT: u32 = 0b10;
 
@@ -106,6 +109,11 @@ pub fn init(baud: u32) {
     pin(GPIOA, 3, ALT, 7, false, true);           // USART2 RX (pulled up so a loose wire reads idle)
     pin(GPIOC, 7, ALT, 2, false, false);          // TIM3 CH2 -> AZ servo
     pin(GPIOB, 6, ALT, 2, false, false);          // TIM4 CH1 -> EL servo
+    // B1, the blue USER button, is the servo enable. The Nucleo already pulls PC13 up to 3V3 and the
+    // button pulls it to ground, so pressed reads 0; the internal pull-up is enabled as well so the
+    // pin still reads "released" if that external resistor is ever absent. Failing open is the safe
+    // direction: an unconnected or broken enable leaves the servos limp, never driving.
+    pin(GPIOC, 13, INPUT, 0, false, true);
 
     // 3. TIM2: free-running 32-bit microsecond counter (16 MHz / 16), wraps every 71 minutes
     wr(TIM2 + PSC, CLOCK_HZ / 1_000_000 - 1);
@@ -156,6 +164,11 @@ pub fn delay_us(us: u32) {
 
 //---------------------------------------------------------------------------------------------- LED
 pub fn led(on: bool) { wr(GPIOA + BSRR, if on { 1 << 5 } else { 1 << (5 + 16) }); }
+
+//---------------------------------------------------------------------------------------------- button
+/// Is B1, the blue USER button, held down right now? Active low, no debounce here: the board has a
+/// 100 nF cap on the pin and `main` requires the same reading for `ENABLE_DEBOUNCE_US` before acting.
+pub fn button() -> bool { rd(GPIOC + IDR) & 1 << 13 == 0 }
 
 //---------------------------------------------------------------------------------------------- servos
 /// Timer ticks per microsecond of pulse (3.2 MHz)
